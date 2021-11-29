@@ -760,6 +760,15 @@ class JdbcConnector(StorageConnector):
 class KafkaConnector(StorageConnector):
     type = StorageConnector.KAFKA
 
+    CONFIG_MAPPING = {
+        "_ssl_truststore_location": "kafka.ssl.truststore.location",
+        "_ssl_truststore_password": "kafka.ssl.truststore.password",
+        "_ssl_keystore_location": "kafka.ssl.keystore.location",
+        "_ssl_keystore_password": "kafka.ssl.keystore.password",
+        "_ssl_key_password": "kafka.ssl.key.password",
+        "_ssl_endpoint_identification_algorithm": "kafka.ssl.endpoint.identification.algorithm",
+    }
+
     def __init__(
         self,
         id,
@@ -786,9 +795,13 @@ class KafkaConnector(StorageConnector):
             else bootstrap_servers
         )
         self._security_protocol = security_protocol
-        self._ssl_truststore_location = ssl_truststore_location
+        self._ssl_truststore_location = engine.get_instance().add_file(
+            ssl_truststore_location
+        )
         self._ssl_truststore_password = ssl_truststore_password
-        self._ssl_keystore_location = ssl_keystore_location
+        self._ssl_keystore_location = engine.get_instance().add_file(
+            ssl_keystore_location
+        )
         self._ssl_keystore_password = ssl_keystore_password
         self._ssl_key_password = ssl_key_password
         self._ssl_endpoint_identification_algorithm = (
@@ -834,14 +847,6 @@ class KafkaConnector(StorageConnector):
         """Return prepared options to be passed to Spark, based on the additional
         arguments.
         """
-        mapping = {
-            "_ssl_truststore_location": "kafka.ssl.truststore.location",
-            "_ssl_truststore_password": "kafka.ssl.truststore.password",
-            "_ssl_keystore_location": "kafka.ssl.keystore.location",
-            "_ssl_keystore_password": "kafka.ssl.keystore.password",
-            "_ssl_key_password": "kafka.ssl.key.password",
-            "_ssl_endpoint_identification_algorithm": "kafka.ssl.endpoint.identification.algorithm",
-        }
 
         config = {
             "kafka.bootstrap.servers": ",".join(self._bootstrap_servers),
@@ -850,7 +855,7 @@ class KafkaConnector(StorageConnector):
 
         ssl_config = {
             v: getattr(self, k)
-            for k, v in mapping.items()
+            for k, v in self.CONFIG_MAPPING.items()
             if getattr(self, k) is not None
         }
 
