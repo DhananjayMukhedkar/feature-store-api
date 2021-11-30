@@ -759,6 +759,7 @@ class JdbcConnector(StorageConnector):
 
 class KafkaConnector(StorageConnector):
     type = StorageConnector.KAFKA
+    SPARK_FORMAT = "kafka"
 
     CONFIG_MAPPING = {
         "_ssl_truststore_location": "kafka.ssl.truststore.location",
@@ -881,7 +882,6 @@ class KafkaConnector(StorageConnector):
         schema: str = None,
         options: dict = {},
         include_metadata: bool = False,
-        include_headers: bool = False,
     ):
         """[summary]
 
@@ -894,7 +894,6 @@ class KafkaConnector(StorageConnector):
             schema (str, optional): [description]. Defaults to None.
             options (dict, optional): [description]. Defaults to {}.
             include_metadata (bool, optional): [description]. Defaults to False.
-            include_headers (bool, optional): [description]. Defaults to False.
 
         # Raises
             Exception: [description]
@@ -904,6 +903,16 @@ class KafkaConnector(StorageConnector):
         """
         if data_format.lower() not in ["avro", "json", None]:
             raise Exception("Can only read JSON and AVRO encoded records from Kafka.")
+
+        if topic_pattern is True:
+            options["subscribePattern"] = topic
+        else:
+            options["subscribe"] = topic
+
+        # if include_headers is True:
+        #    stream = stream.option("includeHeaders", "true")
+        #    kafka_cols.append(col("headers"))
+
         return engine.get_instance().read_stream(
             self,
             topic,
@@ -912,5 +921,4 @@ class KafkaConnector(StorageConnector):
             schema,
             options,
             include_metadata,
-            include_headers,
         )
