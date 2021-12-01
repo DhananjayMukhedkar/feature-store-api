@@ -51,7 +51,8 @@ import java.util.stream.Collectors;
     @JsonSubTypes.Type(value = StorageConnector.RedshiftConnector.class, name = "REDSHIFT"),
     @JsonSubTypes.Type(value = StorageConnector.AdlsConnector.class, name = "ADLS"),
     @JsonSubTypes.Type(value = StorageConnector.SnowflakeConnector.class, name = "SNOWFLAKE"),
-    @JsonSubTypes.Type(value = StorageConnector.JdbcConnector.class, name = "JDBC")
+    @JsonSubTypes.Type(value = StorageConnector.JdbcConnector.class, name = "JDBC"),
+    @JsonSubTypes.Type(value = StorageConnector.KafkaConnector.class, name = "KAFKA")
 })
 public abstract class StorageConnector {
 
@@ -385,6 +386,24 @@ public abstract class StorageConnector {
       JdbcConnector updatedConnector = (JdbcConnector) refetch();
       this.connectionString = updatedConnector.connectionString;
       this.arguments = updatedConnector.arguments;
+    }
+
+    @JsonIgnore
+    public String getPath(String subPath) {
+      return null;
+    }
+  }
+
+  public static class KafkaConnector extends StorageConnector {
+
+    @Getter @Setter
+    private String bootstrapServers;
+
+    @Getter @Setter
+    private SecurityProtocol securityProtocol;
+
+    public Map<String, String> sparkOptions() {
+      return null;
     }
 
     @JsonIgnore
