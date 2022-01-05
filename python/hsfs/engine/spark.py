@@ -20,14 +20,13 @@ import importlib.util
 
 import numpy as np
 import pandas as pd
-import avro
 
 # in case importing in %%local
 try:
     from pyspark.sql import SparkSession, DataFrame
     from pyspark.rdd import RDD
-    from pyspark.sql.functions import struct, concat, col, lit, from_json
-    from pyspark.sql.avro.functions import from_avro, to_avro
+    from pyspark.sql.column import Column, _to_java_column
+    from pyspark.sql.functions import struct, concat, col, lit
 except ImportError:
     pass
 
@@ -276,7 +275,7 @@ class Engine:
             [
                 field["name"]
                 if field["name"] not in feature_group.get_complex_features()
-                else to_avro(
+                else self.to_avro(
                     field["name"], feature_group._get_feature_avro_schema(field["name"])
                 ).alias(field["name"])
                 for field in json.loads(feature_group.avro_schema)["fields"]
@@ -290,7 +289,7 @@ class Engine:
         return dataframe.select(
             [
                 # be aware: primary_key array should always be sorted
-                to_avro(
+                self.to_avro(
                     concat(
                         *[
                             col(f).cast("string")
@@ -298,7 +297,7 @@ class Engine:
                         ]
                     )
                 ).alias("key"),
-                to_avro(
+                self.to_avro(
                     struct(
                         [
                             field["name"]
@@ -318,42 +317,6 @@ class Engine:
 
         dataset = self.convert_to_default_dataframe(dataset)
 
-        # generate transformation function expressions
-        transformed_feature_names = []
-        transformation_fn_expressions = []
-        for (
-            feature_name,
-            transformation_fn,
-        ) in training_dataset.transformation_functions.items():
-            fn_registration_name = (
-                transformation_fn.name + "_" + str(transformation_fn.version)
-            )
-            self._spark_session.udf.register(
-                fn_registration_name, transformation_fn.transformation_fn
-            )
-            transformation_fn_expressions.append(
-                "{fn_name:}({name:}) AS {name:}".format(
-                    fn_name=fn_registration_name, name=feature_name
-                )
-            )
-            transformed_feature_names.append(feature_name)
-
-        # generate non transformation expressions
-        no_transformation_expr = [
-            "{name:} AS {name:}".format(name=col_name)
-            for col_name in dataset.columns
-            if col_name not in transformed_feature_names
-        ]
-
-        # generate entire expression and execute it
-        transformation_fn_expressions.extend(no_transformation_expr)
-        dataset = dataset.selectExpr(*transformation_fn_expressions)
-
-        # sort feature order if it was altered by transformation functions
-        sorded_features = sorted(training_dataset._features, key=lambda ft: ft.index)
-        sorted_feature_names = [ft.name for ft in sorded_features]
-        dataset = dataset.select(*sorted_feature_names)
-
         if training_dataset.coalesce:
             dataset = dataset.coalesce(1)
 
@@ -362,7 +325,30 @@ class Engine:
             training_dataset.data_format, user_write_options
         )
 
+        # check if there any transformation functions that require statistics attached to td features
+        builtin_tffn_features = [
+            ft_name
+            for ft_name in training_dataset.transformation_functions
+            if training_dataset._transformation_function_engine.is_builtin(
+                training_dataset.transformation_functions[ft_name]
+            )
+        ]
+
         if len(training_dataset.splits) == 0:
+            if builtin_tffn_features:
+                # compute statistics before transformations are applied
+                stats = training_dataset._statistics_engine.compute_transformation_fn_statistics(
+                    td_metadata_instance=training_dataset,
+                    columns=builtin_tffn_features,
+                    feature_dataframe=dataset,
+                )
+                # Populate builtin transformations (if any) with respective arguments
+                training_dataset._transformation_function_engine.populate_builtin_attached_fns(
+                    training_dataset.transformation_functions, stats.content
+                )
+            # apply transformation functions (they are applied separately if there are splits)
+            dataset = self._apply_transformation_function(training_dataset, dataset)
+
             path = training_dataset.location + "/" + training_dataset.name
             self._write_training_dataset_single(
                 dataset,
@@ -376,31 +362,53 @@ class Engine:
             split_names = sorted([*training_dataset.splits])
             split_weights = [training_dataset.splits[i] for i in split_names]
             self._write_training_dataset_splits(
+                training_dataset,
                 dataset.randomSplit(split_weights, training_dataset.seed),
-                training_dataset.storage_connector,
-                training_dataset.data_format,
                 write_options,
                 save_mode,
-                training_dataset.location,
                 split_names,
+                builtin_tffn_features=builtin_tffn_features,
             )
 
     def _write_training_dataset_splits(
         self,
+        training_dataset,
         feature_dataframe_list,
-        storage_connector,
-        data_format,
         write_options,
         save_mode,
-        path,
         split_names,
+        builtin_tffn_features,
     ):
+        stats = None
+        if builtin_tffn_features:
+            # compute statistics before transformations are applied
+            i = [
+                i
+                for i, name in enumerate(split_names)
+                if name == training_dataset.train_split
+            ][0]
+            stats = training_dataset._statistics_engine.compute_transformation_fn_statistics(
+                td_metadata_instance=training_dataset,
+                columns=builtin_tffn_features,
+                feature_dataframe=feature_dataframe_list[i],
+            )
+
         for i in range(len(feature_dataframe_list)):
-            split_path = path + "/" + str(split_names[i])
+            # Populate builtin transformations (if any) with respective arguments for each split
+            if stats is not None:
+                training_dataset._transformation_function_engine.populate_builtin_attached_fns(
+                    training_dataset.transformation_functions, stats.content
+                )
+            # apply transformation functions (they are applied separately to each split)
+            dataset = self._apply_transformation_function(
+                training_dataset, dataset=feature_dataframe_list[i]
+            )
+
+            split_path = training_dataset.location + "/" + str(split_names[i])
             self._write_training_dataset_single(
-                feature_dataframe_list[i],
-                storage_connector,
-                data_format,
+                dataset,
+                training_dataset.storage_connector,
+                training_dataset.data_format,
                 write_options,
                 save_mode,
                 split_path,
@@ -446,66 +454,6 @@ class Engine:
             .options(**(read_options if read_options else {}))
             .load(path)
         )
-
-    def read_stream(
-        self,
-        storage_connector,
-        topic,
-        topic_pattern,
-        data_format,
-        schema,
-        options,
-        include_metadata,
-        include_headers,
-    ):
-        kafka_cols = [
-            col("key"),
-            col("topic"),
-            col("partition"),
-            col("offset"),
-            col("timestamp"),
-            col("timestampType"),
-        ]
-
-        stream = self._spark_session.readStream.format("kafka")
-
-        if topic_pattern is True:
-            stream = stream.option("subscribePattern", topic)
-        else:
-            stream = stream.option("subscribe", topic)
-
-        if include_headers is True:
-            stream = stream.option("includeHeaders", "true")
-            kafka_cols.append(col("headers"))
-
-        # set user options last so that they overwrite any default options
-        stream = stream.options(**storage_connector.spark_options(), **options)
-
-        if data_format == "avro" and schema is not None:
-            # check if vallid avro schema
-            avro.schema.parse(schema)
-            df = stream.load()
-            if include_metadata is True:
-                return df.select(
-                    *kafka_cols, from_avro(df.value, schema).alias("value")
-                ).select(*kafka_cols, col("value.*"))
-            return df.select(from_avro(df.value, schema).alias("value")).select(
-                col("value.*")
-            )
-        elif data_format == "json" and schema is not None:
-            df = stream.load()
-            if include_metadata is True:
-                return df.select(
-                    *kafka_cols,
-                    from_json(df.value.cast("string"), schema).alias("value")
-                ).select(*kafka_cols, col("value.*"))
-            return df.select(
-                from_json(df.value.cast("string"), schema).alias("value")
-            ).select(col("value.*"))
-
-        if include_metadata is True:
-            return stream.load()
-        return stream.load().select("key", "value")
 
     def profile(
         self,
@@ -724,6 +672,202 @@ class Engine:
             {},
             {},
         )
+
+    def _print_missing_jar(self, lib_name, pkg_name, jar_name, spark_version):
+        #
+        # Licensed to the Apache Software Foundation (ASF) under one or more
+        # contributor license agreements.  See the NOTICE file distributed with
+        # this work for additional information regarding copyright ownership.
+        # The ASF licenses this file to You under the Apache License, Version 2.0
+        # (the "License"); you may not use this file except in compliance with
+        # the License.  You may obtain a copy of the License at
+        #
+        #    http://www.apache.org/licenses/LICENSE-2.0
+        #
+        # Unless required by applicable law or agreed to in writing, software
+        # distributed under the License is distributed on an "AS IS" BASIS,
+        # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+        # See the License for the specific language governing permissions and
+        # limitations under the License.
+        #
+
+        # This function is a copy from https://github.com/apache/spark/blob/master/python/pyspark/util.py
+        # In accordance with the Apache License Version 2.0, the following changes have been made:
+        # - the function was made a method of a class
+
+        print(
+            """
+    ________________________________________________________________________________________________
+    Spark %(lib_name)s libraries not found in class path. Try one of the following.
+    1. Include the %(lib_name)s library and its dependencies with in the
+        spark-submit command as
+        $ bin/spark-submit --packages org.apache.spark:spark-%(pkg_name)s:%(spark_version)s ...
+    2. Download the JAR of the artifact from Maven Central http://search.maven.org/,
+        Group Id = org.apache.spark, Artifact Id = spark-%(jar_name)s, Version = %(spark_version)s.
+        Then, include the jar in the spark-submit command as
+        $ bin/spark-submit --jars <spark-%(jar_name)s.jar> ...
+    ________________________________________________________________________________________________
+    """
+            % {
+                "lib_name": lib_name,
+                "pkg_name": pkg_name,
+                "jar_name": jar_name,
+                "spark_version": spark_version,
+            }
+        )
+
+    def from_avro(self, data, jsonFormatSchema, options={}):
+        """
+        Converts a binary column of avro format into its corresponding catalyst value. The specified
+        schema must match the read data, otherwise the behavior is undefined: it may fail or return
+        arbitrary result.
+        Note: Avro is built-in but external data source module since Spark 2.4. Please deploy the
+        application as per the deployment section of "Apache Avro Data Source Guide".
+        :param data: the binary column.
+        :param jsonFormatSchema: the avro schema in JSON string format.
+        :param options: options to control how the Avro record is parsed.
+        >>> from pyspark.sql import Row
+        >>> from pyspark.sql.avro.functions import from_avro, to_avro
+        >>> data = [(1, Row(name='Alice', age=2))]
+        >>> df = spark.createDataFrame(data, ("key", "value"))
+        >>> avroDf = df.select(to_avro(df.value).alias("avro"))
+        >>> avroDf.collect()
+        [Row(avro=bytearray(b'\\x00\\x00\\x04\\x00\\nAlice'))]
+        >>> jsonFormatSchema = '''{"type":"record","name":"topLevelRecord","fields":
+        ...     [{"name":"avro","type":[{"type":"record","name":"value","namespace":"topLevelRecord",
+        ...     "fields":[{"name":"age","type":["long","null"]},
+        ...     {"name":"name","type":["string","null"]}]},"null"]}]}'''
+        >>> avroDf.select(from_avro(avroDf.avro, jsonFormatSchema).alias("value")).collect()
+        [Row(value=Row(avro=Row(age=2, name=u'Alice')))]
+        """
+
+        #
+        # Licensed to the Apache Software Foundation (ASF) under one or more
+        # contributor license agreements.  See the NOTICE file distributed with
+        # this work for additional information regarding copyright ownership.
+        # The ASF licenses this file to You under the Apache License, Version 2.0
+        # (the "License"); you may not use this file except in compliance with
+        # the License.  You may obtain a copy of the License at
+        #
+        #    http://www.apache.org/licenses/LICENSE-2.0
+        #
+        # Unless required by applicable law or agreed to in writing, software
+        # distributed under the License is distributed on an "AS IS" BASIS,
+        # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+        # See the License for the specific language governing permissions and
+        # limitations under the License.
+        #
+
+        # This function is a copy from https://github.com/apache/spark/blob/master/python/pyspark/sql/avro/functions.py
+        # In accordance with the Apache License Version 2.0, the following changes have been made:
+        # - the function was made a method of a class
+
+        try:
+            jc = self._jvm.org.apache.spark.sql.avro.functions.from_avro(
+                _to_java_column(data), jsonFormatSchema, options
+            )
+        except TypeError as e:
+            if str(e) == "'JavaPackage' object is not callable":
+                self._print_missing_jar(
+                    "Avro", "avro", "avro", self._spark_context.version
+                )
+            raise
+        return Column(jc)
+
+    def to_avro(self, data, jsonFormatSchema=""):
+        """
+        Converts a column into binary of avro format.
+        Note: Avro is built-in but external data source module since Spark 2.4. Please deploy the
+        application as per the deployment section of "Apache Avro Data Source Guide".
+        :param data: the data column.
+        :param jsonFormatSchema: user-specified output avro schema in JSON string format.
+        >>> from pyspark.sql import Row
+        >>> from pyspark.sql.avro.functions import to_avro
+        >>> data = ['SPADES']
+        >>> df = spark.createDataFrame(data, "string")
+        >>> df.select(to_avro(df.value).alias("suite")).collect()
+        [Row(suite=bytearray(b'\\x00\\x0cSPADES'))]
+        >>> jsonFormatSchema = '''["null", {"type": "enum", "name": "value",
+        ...     "symbols": ["SPADES", "HEARTS", "DIAMONDS", "CLUBS"]}]'''
+        >>> df.select(to_avro(df.value, jsonFormatSchema).alias("suite")).collect()
+        [Row(suite=bytearray(b'\\x02\\x00'))]
+        """
+
+        #
+        # Licensed to the Apache Software Foundation (ASF) under one or more
+        # contributor license agreements.  See the NOTICE file distributed with
+        # this work for additional information regarding copyright ownership.
+        # The ASF licenses this file to You under the Apache License, Version 2.0
+        # (the "License"); you may not use this file except in compliance with
+        # the License.  You may obtain a copy of the License at
+        #
+        #    http://www.apache.org/licenses/LICENSE-2.0
+        #
+        # Unless required by applicable law or agreed to in writing, software
+        # distributed under the License is distributed on an "AS IS" BASIS,
+        # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+        # See the License for the specific language governing permissions and
+        # limitations under the License.
+        #
+
+        # This function is a copy from https://github.com/apache/spark/blob/master/python/pyspark/sql/avro/functions.py
+        # In accordance with the Apache License Version 2.0, the following changes have been made:
+        # - the function was made a method of a class
+
+        try:
+            if jsonFormatSchema == "":
+                jc = self._jvm.org.apache.spark.sql.avro.functions.to_avro(
+                    _to_java_column(data)
+                )
+            else:
+                jc = self._jvm.org.apache.spark.sql.avro.functions.to_avro(
+                    _to_java_column(data), jsonFormatSchema
+                )
+        except TypeError as e:
+            if str(e) == "'JavaPackage' object is not callable":
+                self._print_missing_jar(
+                    "Avro", "avro", "avro", self._spark_context.version
+                )
+            raise
+        return Column(jc)
+
+    def _apply_transformation_function(self, training_dataset, dataset):
+        # generate transformation function expressions
+        transformed_feature_names = []
+        transformation_fn_expressions = []
+        for (
+            feature_name,
+            transformation_fn,
+        ) in training_dataset.transformation_functions.items():
+            fn_registration_name = (
+                transformation_fn.name + "_" + str(transformation_fn.version)
+            )
+            self._spark_session.udf.register(
+                fn_registration_name, transformation_fn.transformation_fn
+            )
+            transformation_fn_expressions.append(
+                "{fn_name:}({name:}) AS {name:}".format(
+                    fn_name=fn_registration_name, name=feature_name
+                )
+            )
+            transformed_feature_names.append(feature_name)
+
+        # generate non transformation expressions
+        no_transformation_expr = [
+            "{name:} AS {name:}".format(name=col_name)
+            for col_name in dataset.columns
+            if col_name not in transformed_feature_names
+        ]
+
+        # generate entire expression and execute it
+        transformation_fn_expressions.extend(no_transformation_expr)
+        dataset = dataset.selectExpr(*transformation_fn_expressions)
+
+        # sort feature order if it was altered by transformation functions
+        sorded_features = sorted(training_dataset._features, key=lambda ft: ft.index)
+        sorted_feature_names = [ft.name for ft in sorded_features]
+        dataset = dataset.select(*sorted_feature_names)
+        return dataset
 
 
 class SchemaError(Exception):

@@ -16,11 +16,10 @@
 
 import re
 import io
-import warnings
 
 import avro.schema
 import avro.io
-from sqlalchemy import sql, bindparam, exc
+from sqlalchemy import sql, bindparam
 
 from hsfs import engine, training_dataset_feature, util
 from hsfs.core import (
@@ -29,6 +28,7 @@ from hsfs.core import (
     storage_connector_api,
     transformation_function_engine,
 )
+from hsfs.client import exceptions
 from hsfs.constructor import query
 
 
@@ -79,14 +79,14 @@ class TrainingDatasetEngine:
                 raise ValueError(
                     "Transformation functions can only be applied to training datasets generated from Query object"
                 )
-
-        if len(training_dataset.splits) > 0 and training_dataset.train_split is None:
-            training_dataset.train_split = "train"
-            warnings.warn(
-                "Training dataset splits were defined but no `train_split` (the name of the split that is going to be "
-                "used for training) was provided. Setting this property to `train`. The statistics of this "
-                "split will be used for transformation functions."
-            )
+            if (
+                len(training_dataset.splits) > 0
+                and training_dataset.train_split is None
+            ):
+                raise exceptions.FeatureStoreException(
+                    "`train_split` the name of the split that is going to be used for training must be provided."
+                    "The statistics of this split will be used for transformation functions."
+                )
 
         updated_instance = self._training_dataset_api.post(training_dataset)
         td_job = engine.get_instance().write_training_dataset(
@@ -196,7 +196,6 @@ class TrainingDatasetEngine:
         # get schemas for complex features once
         complex_features = self.get_complex_feature_schemas(training_dataset)
 
-        self.refresh_mysql_connection(training_dataset, external)
         for prepared_statement_index in prepared_statements:
             prepared_statement = prepared_statements[prepared_statement_index]
             with training_dataset.prepared_statement_engine.connect() as mysql_conn:
@@ -249,7 +248,6 @@ class TrainingDatasetEngine:
         # get schemas for complex features once
         complex_features = self.get_complex_feature_schemas(training_dataset)
 
-        self.refresh_mysql_connection(training_dataset, external)
         for prepared_statement_index in training_dataset.prepared_statements:
             order_in_batch = 0
             prepared_statement = prepared_statements[prepared_statement_index]
@@ -295,18 +293,6 @@ class TrainingDatasetEngine:
 
         return list(batch_dicts.values())
 
-    def refresh_mysql_connection(self, training_dataset, external):
-        try:
-            with training_dataset.prepared_statement_engine.connect():
-                pass
-        except exc.OperationalError:
-            self._set_mysql_connection(training_dataset, external)
-
-    def _set_mysql_connection(self, training_dataset, external):
-        online_conn = self._storage_connector_api.get_online_connector()
-        mysql_engine = util.create_mysql_engine(online_conn, external)
-        training_dataset.prepared_statement_engine = mysql_engine
-
     def init_prepared_statement(self, training_dataset, batch, external):
 
         # reset values to default, as user may be re-initialising with different parameters
@@ -314,7 +300,8 @@ class TrainingDatasetEngine:
         training_dataset.prepared_statements = None
         training_dataset.serving_keys = None
 
-        self._set_mysql_connection(training_dataset, external)
+        online_conn = self._storage_connector_api.get_online_connector()
+        mysql_engine = util.create_mysql_engine(online_conn, external)
         prepared_statements = self._training_dataset_api.get_serving_prepared_statement(
             training_dataset, batch
         )
@@ -356,6 +343,7 @@ class TrainingDatasetEngine:
                 prepared_statement.prepared_statement_index
             ] = query_online
 
+        training_dataset.prepared_statement_engine = mysql_engine
         training_dataset.prepared_statements = prepared_statements_dict
         training_dataset.serving_keys = serving_vector_keys
 
@@ -384,8 +372,7 @@ class TrainingDatasetEngine:
 
         transformation_fns = (
             self._transformation_function_engine.populate_builtin_attached_fns(
-                transformation_functions,
-                td_tffn_stats.content if td_tffn_stats is not None else None,
+                transformation_functions, td_tffn_stats.content
             )
         )
         return transformation_fns
