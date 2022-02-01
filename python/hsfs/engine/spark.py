@@ -921,7 +921,7 @@ class Engine:
             )
             self._spark_context._jsc.hadoopConfiguration().set(
                 "fs.gs.encryption.key.hash",
-                "89dc24c7bce8abf884db406a1121af394ce17feed0cbe7d4e0c043ebaffa6918",
+                "ODlkYzI0YzdiY2U4YWJmODg0ZGI0MDZhMTEyMWFmMzk0Y2UxN2ZlZWQwY2JlN2Q0ZTBjMDQzZWJhZmZhNjkxOA==",
             )
 
         return path.replace("/**", "") if path is not None else None
