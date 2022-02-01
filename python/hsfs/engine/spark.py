@@ -14,6 +14,7 @@
 #   limitations under the License.
 #
 
+import os
 import json
 import datetime
 import importlib.util
@@ -23,10 +24,12 @@ import pandas as pd
 
 # in case importing in %%local
 try:
+    from pyspark import SparkFiles
     from pyspark.sql import SparkSession, DataFrame
     from pyspark.rdd import RDD
     from pyspark.sql.column import Column, _to_java_column
     from pyspark.sql.functions import struct, concat, col, lit
+
 except ImportError:
     pass
 
@@ -455,6 +458,10 @@ class Engine:
             .load(path)
         )
 
+    def add_file(self, file):
+        self._spark_context.addFile("hdfs://" + file)
+        return SparkFiles.get(os.path.basename(file))
+
     def profile(
         self,
         dataframe,
@@ -611,6 +618,9 @@ class Engine:
             return self._setup_s3_hadoop_conf(storage_connector, path)
         elif storage_connector.type == StorageConnector.ADLS:
             return self._setup_adls_hadoop_conf(storage_connector, path)
+        elif storage_connector.type == StorageConnector.GCS:
+            return self._setup_gcp_hadoop_conf(storage_connector, path)
+
         else:
             return path
 
@@ -868,6 +878,53 @@ class Engine:
         sorted_feature_names = [ft.name for ft in sorded_features]
         dataset = dataset.select(*sorted_feature_names)
         return dataset
+
+    def _setup_gcp_hadoop_conf(self, storage_connector, path):
+
+        if storage_connector.key_path:
+
+            print(" ###### updating hadoop conf ######")
+            self._spark_context._jsc.hadoopConfiguration().set(
+                "fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
+                "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
+            )
+            self._spark_context._jsc.hadoopConfiguration().set(
+                "google.cloud.auth.service.account.enable", "true"
+            )
+
+            local_path = self.add_file(
+                storage_connector.key_path.replace("hdfs://", "")
+            )
+
+            self._spark_context._jsc.hadoopConfiguration().set(
+                "fs.gs.auth.service.account.json.keyfile", local_path
+            )
+
+            # df = self._spark_session.read.json(storage_connector.key_path).option('multiline', 'true')
+            # row = df.first()
+            # self._spark_context._jsc.hadoopConfiguration().set(
+            #     "fs.gs.auth.service.account.email", row['client_email']
+            # )
+            # self._spark_context._jsc.hadoopConfiguration().set(
+            #     "fs.gs.auth.service.account.private.key.id", row['private_key_id']
+            # )
+            # self._spark_context._jsc.hadoopConfiguration().set(
+            #     "fs.gs.auth.service.account.private.key", row['private_key']
+            # )
+
+            print("### using encryption keys ####")
+            self._spark_context._jsc.hadoopConfiguration().set(
+                "fs.gs.encryption.algorithm", "AES256"
+            )
+            self._spark_context._jsc.hadoopConfiguration().set(
+                "fs.gs.encryption.key", "sASG/vtbBpA+PyIxWvjjWupcffHIdT4ade/A9kt3CbY="
+            )
+            self._spark_context._jsc.hadoopConfiguration().set(
+                "fs.gs.encryption.key.hash",
+                "89DC24C7BCE8ABF884DB406A1121AF394CE17FEED0CBE7D4E0C043EBAFFA6918",
+            )
+
+        return path.replace("/**", "") if path is not None else None
 
 
 class SchemaError(Exception):
