@@ -882,12 +882,13 @@ class Engine:
     def _setup_gcp_hadoop_conf(self, storage_connector, path):
 
         if storage_connector.key_path:
-
-            print(" ###### updating hadoop conf ######")
+            # The AbstractFileSystem for 'gs:' URIs
             self._spark_context._jsc.hadoopConfiguration().set(
                 "fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
                 "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
             )
+            # Whether to use a service account for GCS authorization. Setting this
+            # property to `false` will disable use of service accounts for authentication.
             self._spark_context._jsc.hadoopConfiguration().set(
                 "google.cloud.auth.service.account.enable", "true"
             )
@@ -895,7 +896,8 @@ class Engine:
             local_path = self.add_file(
                 storage_connector.key_path.replace("hdfs://", "")
             )
-
+            # The JSON key file of the service account used for GCS
+            # access when google.cloud.auth.service.account.enable is true.
             self._spark_context._jsc.hadoopConfiguration().set(
                 "fs.gs.auth.service.account.json.keyfile", local_path
             )
@@ -912,19 +914,19 @@ class Engine:
             #     "fs.gs.auth.service.account.private.key", row['private_key']
             # )
 
-            print("### using encryption keys ####")
-            self._spark_context._jsc.hadoopConfiguration().set(
-                "fs.gs.encryption.algorithm", "AES256"
-            )
-            self._spark_context._jsc.hadoopConfiguration().set(
-                "fs.gs.encryption.key", "sASG/vtbBpA+PyIxWvjjWupcffHIdT4ade/A9kt3CbY="
-            )
-            self._spark_context._jsc.hadoopConfiguration().set(
-                "fs.gs.encryption.key.hash",
-                "ODlkYzI0YzdiY2U4YWJmODg0ZGI0MDZhMTEyMWFmMzk0Y2UxN2ZlZWQwY2JlN2Q0ZTBjMDQzZWJhZmZhNjkxOA==",
-            )
+            # print("### using encryption keys ####")
+            # self._spark_context._jsc.hadoopConfiguration().set(
+            #     "fs.gs.encryption.algorithm", "AES256"
+            # )
+            # self._spark_context._jsc.hadoopConfiguration().set(
+            #     "fs.gs.encryption.key", "sASG/vtbBpA+PyIxWvjjWupcffHIdT4ade/A9kt3CbY="
+            # )
+            # self._spark_context._jsc.hadoopConfiguration().set(
+            #     "fs.gs.encryption.key.hash",
+            #     "ODlkYzI0YzdiY2U4YWJmODg0ZGI0MDZhMTEyMWFmMzk0Y2UxN2ZlZWQwY2JlN2Q0ZTBjMDQzZWJhZmZhNjkxOA==",
+            # )
 
-        return path.replace("/**", "") if path is not None else None
+        return path
 
 
 class SchemaError(Exception):
