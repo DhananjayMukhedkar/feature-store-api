@@ -769,15 +769,33 @@ class GcsConnector(StorageConnector):
         featurestore_id,
         # members specific to type of connector
         key_path=None,
+        algorithm=None,
+        encryption_key=None,
+        encryption_key_hash=None,
     ):
         super().__init__(id, name, description, featurestore_id)
 
         self._key_path = key_path
+        self._algorithm = algorithm
+        self._encryption_key = encryption_key
+        self._encryption_key_hash = encryption_key_hash
 
     @property
     def key_path(self):
         """hdfs key path"""
         return self._key_path
+
+    @property
+    def algorithm(self):
+        return self._algorithm
+
+    @property
+    def encryption_key(self):
+        return self._encryption_key
+
+    @property
+    def encryption_key_hash(self):
+        return self._encryption_key_hash
 
     def spark_options(self):
         return super().spark_options
