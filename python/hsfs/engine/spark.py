@@ -902,29 +902,17 @@ class Engine:
                 "fs.gs.auth.service.account.json.keyfile", local_path
             )
 
-            # df = self._spark_session.read.json(storage_connector.key_path).option('multiline', 'true')
-            # row = df.first()
-            # self._spark_context._jsc.hadoopConfiguration().set(
-            #     "fs.gs.auth.service.account.email", row['client_email']
-            # )
-            # self._spark_context._jsc.hadoopConfiguration().set(
-            #     "fs.gs.auth.service.account.private.key.id", row['private_key_id']
-            # )
-            # self._spark_context._jsc.hadoopConfiguration().set(
-            #     "fs.gs.auth.service.account.private.key", row['private_key']
-            # )
-
-            # print("### using encryption keys ####")
-            # self._spark_context._jsc.hadoopConfiguration().set(
-            #     "fs.gs.encryption.algorithm", "AES256"
-            # )
-            # self._spark_context._jsc.hadoopConfiguration().set(
-            #     "fs.gs.encryption.key", "sASG/vtbBpA+PyIxWvjjWupcffHIdT4ade/A9kt3CbY="
-            # )
-            # self._spark_context._jsc.hadoopConfiguration().set(
-            #     "fs.gs.encryption.key.hash",
-            #     "ODlkYzI0YzdiY2U4YWJmODg0ZGI0MDZhMTEyMWFmMzk0Y2UxN2ZlZWQwY2JlN2Q0ZTBjMDQzZWJhZmZhNjkxOA==",
-            # )
+            if storage_connector.encryption_key:
+                print("### using encryption keys ####")
+                self._spark_context._jsc.hadoopConfiguration().set(
+                    "fs.gs.encryption.algorithm", storage_connector.algorithm
+                )
+                self._spark_context._jsc.hadoopConfiguration().set(
+                    "fs.gs.encryption.key", storage_connector.encryption_key
+                )
+                self._spark_context._jsc.hadoopConfiguration().set(
+                    "fs.gs.encryption.key.hash", storage_connector.encryption_key_hash
+                )
 
         return path
 
