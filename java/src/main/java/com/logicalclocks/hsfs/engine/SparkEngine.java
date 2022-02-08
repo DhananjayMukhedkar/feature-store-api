@@ -34,6 +34,7 @@ import com.logicalclocks.hsfs.metadata.HopsworksClient;
 import com.logicalclocks.hsfs.metadata.OnDemandOptions;
 import com.logicalclocks.hsfs.metadata.Option;
 import com.logicalclocks.hsfs.util.Constants;
+
 import lombok.Getter;
 import org.apache.avro.Schema;
 import org.apache.avro.SchemaParseException;
@@ -491,6 +492,9 @@ public class SparkEngine {
       case ADLS:
         setupAdlsConnectorHadoopConf((StorageConnector.AdlsConnector) storageConnector);
         break;
+      case GCS:
+        setupGcsConnectorHadoopConf((StorageConnector.GcsConnector) storageConnector);
+        break;
       default:
         // No-OP
         break;
@@ -604,5 +608,32 @@ public class SparkEngine {
       return stream.load();
     }
     return stream.load().select("key", "value");
+  }
+
+  private void setupGcsConnectorHadoopConf(StorageConnector.GcsConnector storageConnector) {
+
+    if (!Strings.isNullOrEmpty(storageConnector.getKeyPath())) {
+      sparkSession.sparkContext().hadoopConfiguration().set(
+            "fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
+          "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS"
+      );
+      sparkSession.sparkContext().hadoopConfiguration().set(
+          "google.cloud.auth.service.account.enable", "true"
+      );
+      String localPath = addFile(storageConnector.getKeyPath().replace("hdfs://", ""));
+      sparkSession.sparkContext().hadoopConfiguration().set(
+          "fs.gs.auth.service.account.json.keyfile", localPath
+      );
+    }
+
+    if (!Strings.isNullOrEmpty(storageConnector.getEncryptionKey())) {
+      sparkSession.sparkContext().hadoopConfiguration().set(
+          "fs.gs.encryption.algorithm", storageConnector.getAlgorithm());
+      sparkSession.sparkContext().hadoopConfiguration().set(
+          "fs.gs.encryption.key", storageConnector.getEncryptionKey());
+      sparkSession.sparkContext().hadoopConfiguration().set(
+          "fs.gs.encryption.key.hash", storageConnector.getEncryptionKeyHash());
+    }
+
   }
 }
