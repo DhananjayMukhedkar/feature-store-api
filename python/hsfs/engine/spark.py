@@ -14,6 +14,7 @@
 #   limitations under the License.
 #
 
+import os
 import json
 import datetime
 import importlib.util
@@ -27,6 +28,7 @@ try:
     from pyspark.rdd import RDD
     from pyspark.sql.column import Column, _to_java_column
     from pyspark.sql.functions import struct, concat, col, lit
+    from pyspark import SparkFiles
 except ImportError:
     pass
 
@@ -454,6 +456,10 @@ class Engine:
             .options(**(read_options if read_options else {}))
             .load(path)
         )
+
+    def add_file(self, file):
+        self._spark_context.addFile("hdfs://" + file)
+        return SparkFiles.get(os.path.basename(file))
 
     def profile(
         self,
