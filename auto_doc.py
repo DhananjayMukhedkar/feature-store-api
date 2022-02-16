@@ -142,6 +142,12 @@ PAGES = {
         "jdbc_properties": keras_autodoc.get_properties(
             "hsfs.storage_connector.JdbcConnector"
         ),
+        "gcs_methods": keras_autodoc.get_methods(
+            "hsfs.storage_connector.GcsConnector", exclude=["from_response_json"]
+        ),
+        "gcs_properties": keras_autodoc.get_properties(
+            "hsfs.storage_connector.GcsConnector"
+        ),
     },
     "query_vs_dataframe.md": {
         "query_methods": keras_autodoc.get_methods("hsfs.constructor.query.Query"),
@@ -303,6 +309,12 @@ PAGES = {
         ),
         "jdbc_properties": keras_autodoc.get_properties(
             "hsfs.storage_connector.JdbcConnector"
+        ),
+        "gcs_methods": keras_autodoc.get_methods(
+            "hsfs.storage_connector.GcsConnector", exclude=["from_response_json"]
+        ),
+        "gcs_properties": keras_autodoc.get_properties(
+            "hsfs.storage_connector.GcsConnector"
         ),
     },
     "api/statistics_config_api.md": {
