@@ -902,16 +902,31 @@ class Engine:
                 "fs.gs.auth.service.account.json.keyfile", local_path
             )
 
-            if storage_connector.encryption_key:
-                print("### using encryption keys ####")
-                self._spark_context._jsc.hadoopConfiguration().set(
-                    "fs.gs.encryption.algorithm", storage_connector.algorithm
-                )
+            if storage_connector.encryption_key:  # if encryption fields present
                 self._spark_context._jsc.hadoopConfiguration().set(
                     "fs.gs.encryption.key", storage_connector.encryption_key
                 )
+            else:
+                self._spark_context._jsc.hadoopConfiguration().unset(
+                    "fs.gs.encryption.key"
+                )
+
+            if storage_connector.algorithm:
+                self._spark_context._jsc.hadoopConfiguration().set(
+                    "fs.gs.encryption.algorithm", storage_connector.algorithm
+                )
+            else:
+                self._spark_context._jsc.hadoopConfiguration().unset(
+                    "fs.gs.encryption.algorithm"
+                )
+
+            if storage_connector.encryption_key_hash:
                 self._spark_context._jsc.hadoopConfiguration().set(
                     "fs.gs.encryption.key.hash", storage_connector.encryption_key_hash
+                )
+            else:
+                self._spark_context._jsc.hadoopConfiguration().unset(
+                    "fs.gs.encryption.key.hash"
                 )
 
         return path
