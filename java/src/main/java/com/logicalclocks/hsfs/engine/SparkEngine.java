@@ -611,29 +611,47 @@ public class SparkEngine {
   }
 
   private void setupGcsConnectorHadoopConf(StorageConnector.GcsConnector storageConnector) {
+    final String PROPERTY_KEY_FILE = "fs.gs.auth.service.account.json.keyfile";
+    final String PROPERTY_ENCRYPTION_KEY = "fs.gs.encryption.key";
+    final String PROPERTY_ENCRYPTION_HASH = "fs.gs.encryption.key.hash";
+    final String PROPERTY_ALGORITHM = "fs.gs.encryption.algorithm";
+    final String PROPERTY_GCS_FS_KEY = "fs.AbstractFileSystem.gs.impl";
+    final String PROPERTY_GCS_FS_VALUE = "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS";
+    final String PROPERTY_GCS_ACCOUNT_ENABLE = "google.cloud.auth.service.account.enable";
 
+     // The AbstractFileSystem for 'gs:' URIs
+    sparkSession.sparkContext().hadoopConfiguration().set(
+      PROPERTY_GCS_FS_KEY, PROPERTY_GCS_FS_VALUE
+    );
+    // Whether to use a service account for GCS authorization. Setting this
+    // property to `false` will disable use of service accounts for authentication.
+    sparkSession.sparkContext().hadoopConfiguration().set(
+      PROPERTY_GCS_ACCOUNT_ENABLE, "true"
+    );
+    // The JSON key file of the service account used for GCS
+    // access when google.cloud.auth.service.account.enable is true.
     if (!Strings.isNullOrEmpty(storageConnector.getKeyPath())) {
-      sparkSession.sparkContext().hadoopConfiguration().set(
-            "fs.AbstractFileSystem.gs.impl=com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
-          "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS"
-      );
-      sparkSession.sparkContext().hadoopConfiguration().set(
-          "google.cloud.auth.service.account.enable", "true"
-      );
       String localPath = addFile(storageConnector.getKeyPath().replace("hdfs://", ""));
       sparkSession.sparkContext().hadoopConfiguration().set(
-          "fs.gs.auth.service.account.json.keyfile", localPath
+        PROPERTY_KEY_FILE, localPath
       );
     }
 
-    if (!Strings.isNullOrEmpty(storageConnector.getEncryptionKey())) {
+    if (!Strings.isNullOrEmpty(storageConnector.getEncryptionKey())) { // if encryption fields present
       sparkSession.sparkContext().hadoopConfiguration().set(
-          "fs.gs.encryption.algorithm", storageConnector.getAlgorithm());
+          PROPERTY_ENCRYPTION_KEY, storageConnector.getEncryptionKey());
+    } else sparkSession.sparkContext().hadoopConfiguration().unset(PROPERTY_ENCRYPTION_KEY); // unset if set before
+
+    if (!Strings.isNullOrEmpty(storageConnector.getEncryptionKeyHash())){
       sparkSession.sparkContext().hadoopConfiguration().set(
-          "fs.gs.encryption.key", storageConnector.getEncryptionKey());
+        PROPERTY_ENCRYPTION_HASH, storageConnector.getEncryptionKeyHash());
+    } else sparkSession.sparkContext().hadoopConfiguration().unset(PROPERTY_ENCRYPTION_HASH);
+
+    if (!Strings.isNullOrEmpty(storageConnector.getAlgorithm())){
       sparkSession.sparkContext().hadoopConfiguration().set(
-          "fs.gs.encryption.key.hash", storageConnector.getEncryptionKeyHash());
-    }
+        PROPERTY_ALGORITHM, storageConnector.getAlgorithm());
+    } else sparkSession.sparkContext().hadoopConfiguration().unset(PROPERTY_ALGORITHM);
+
 
   }
 }

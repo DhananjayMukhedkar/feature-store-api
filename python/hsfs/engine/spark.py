@@ -885,17 +885,17 @@ class Engine:
         PROPERTY_ENCRYPTION_KEY = "fs.gs.encryption.key"
         PROPERTY_ENCRYPTION_HASH = "fs.gs.encryption.key.hash"
         PROPERTY_ALGORITHM = "fs.gs.encryption.algorithm"
-
+        PROPERTY_GCS_FS_KEY = "fs.AbstractFileSystem.gs.impl"
+        PROPERTY_GCS_FS_VALUE = "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS"
+        PROPERTY_GCS_ACCOUNT_ENABLE = "google.cloud.auth.service.account.enable"
         # The AbstractFileSystem for 'gs:' URIs
         self._spark_context._jsc.hadoopConfiguration().setIfUnset(
-            "fs.AbstractFileSystem.gs.impl",
-            "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
+            PROPERTY_GCS_FS_KEY, PROPERTY_GCS_FS_VALUE
         )
         # Whether to use a service account for GCS authorization. Setting this
         # property to `false` will disable use of service accounts for authentication.
         self._spark_context._jsc.hadoopConfiguration().setIfUnset(
-            "google.cloud.auth.service.account.enable",
-            "true",
+            PROPERTY_GCS_ACCOUNT_ENABLE, "true"
         )
 
         # The JSON key file of the service account used for GCS
