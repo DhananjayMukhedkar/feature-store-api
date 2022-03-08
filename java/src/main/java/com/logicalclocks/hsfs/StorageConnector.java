@@ -31,7 +31,9 @@ import lombok.Setter;
 import lombok.ToString;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
+import org.apache.spark.sql.types.StructType;
 
+import javax.ws.rs.NotSupportedException;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.Arrays;
@@ -188,7 +190,7 @@ public abstract class StorageConnector {
     private String iamRole;
 
     @Getter @Setter
-    private String arguments;
+    private List<Option> arguments;
 
     @Getter @Setter
     private Instant expiration;
@@ -196,8 +198,10 @@ public abstract class StorageConnector {
     public Map<String, String> sparkOptions() {
       String constr =
           "jdbc:redshift://" + clusterIdentifier + "." + databaseEndpoint + ":" + databasePort + "/" + databaseName;
-      if (!Strings.isNullOrEmpty(arguments)) {
-        constr += "?" + arguments;
+      if (arguments != null && !arguments.isEmpty()) {
+        constr += "?" + arguments.stream()
+          .map(arg -> arg.getName() + (arg.getValue() != null ? "=" + arg.getValue() : ""))
+          .collect(Collectors.joining(","));
       }
       Map<String, String> options = new HashMap<>();
       options.put(Constants.JDBC_DRIVER, databaseDriver);
