@@ -539,9 +539,5 @@ public abstract class StorageConnector {
     public String getEncryptionKeyHash() {
       return encryptionKeyHash;
     }
-
   }
-
-
-
 }
