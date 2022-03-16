@@ -699,7 +699,5 @@ public class SparkEngine {
     } else {
       sparkSession.sparkContext().hadoopConfiguration().unset(property_algorithm);
     }
-
-
   }
 }
