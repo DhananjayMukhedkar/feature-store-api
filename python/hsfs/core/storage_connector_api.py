@@ -33,6 +33,7 @@ class StorageConnectorApi:
             name,
         ]
         query_params = {"temporaryCredentials": True}
+        print(query_params)
         return _client._send_request("GET", path_params, query_params=query_params)
 
     def get(self, name):

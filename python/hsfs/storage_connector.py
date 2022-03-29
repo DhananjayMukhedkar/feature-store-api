@@ -48,6 +48,7 @@ class StorageConnector(ABC):
     @classmethod
     def from_response_json(cls, json_dict):
         json_decamelized = humps.decamelize(json_dict)
+        print(json_decamelized)
         _ = json_decamelized.pop("type")
         for subcls in cls.__subclasses__():
             if subcls.type == json_decamelized["storage_connector_type"]:
