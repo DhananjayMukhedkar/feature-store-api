@@ -65,11 +65,6 @@ except ImportError:
     pass
 
 
-def update_progress(progress_bar, increment=1):
-    if progress_bar is not None:
-        progress_bar.update(increment)
-
-
 class Engine:
     APP_OP_INSERT_FG = "insert_fg"
 
@@ -755,15 +750,24 @@ class Engine:
 
         # setup row writer function
         writer = self._get_encoder_func(feature_group._get_encoded_avro_schema())
-        progress_bar = None
 
         def acked(err, msg):
             if err is not None:
                 print("Failed to deliver message: %s: %s" % (str(msg), str(err)))
             else:
-                if progress_bar is not None:
-                    progress_bar.update()
+                try:
+                    if progress_bar is not None:
+                        progress_bar.update()
+                except Exception as e:
+                    print("Failed tp update progress bar: {}".format(e))
 
+        # initialize progress bar
+        progress_bar = tqdm(
+            total=dataframe.shape[0],
+            bar_format="{desc}: {percentage:.2f}% |{bar}| Rows {n_fmt}/{total_fmt} | "
+            "Elapsed Time: {elapsed} | Remaining Time: {remaining}",
+            desc="Publishing Dataframe",
+        )
         # loop over rows
         for r in dataframe.itertuples(index=False):
             # itertuples returns Python NamedTyple, to be able to serialize it using
@@ -792,9 +796,6 @@ class Engine:
             # assemble key
             key = "".join([str(row[pk]) for pk in sorted(feature_group.primary_key)])
 
-            progress_bar = tqdm(
-                total=dataframe.shape[0], desc="uploading rows", position=0, leave=True
-            )
             while True:
                 # if BufferError is thrown, we can be sure, message hasn't been send so we retry
                 try:
@@ -819,7 +820,8 @@ class Engine:
 
         # make sure producer blocks and everything is delivered
         producer.flush()
-        progress_bar.close()
+        if progress_bar:
+            progress_bar.close()
 
         # start backfilling job
         job_name = "{fg_name}_{version}_offline_fg_backfill".format(
