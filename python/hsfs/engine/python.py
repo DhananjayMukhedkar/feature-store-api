@@ -755,12 +755,14 @@ class Engine:
 
         # setup row writer function
         writer = self._get_encoder_func(feature_group._get_encoded_avro_schema())
+        progress_bar = None
 
         def acked(err, msg):
             if err is not None:
                 print("Failed to deliver message: %s: %s" % (str(msg), str(err)))
             else:
-                update_progress(progress_bar, 1)
+                if progress_bar is not None:
+                    progress_bar.update()
 
         # loop over rows
         for r in dataframe.itertuples(index=False):
@@ -790,6 +792,7 @@ class Engine:
             # assemble key
             key = "".join([str(row[pk]) for pk in sorted(feature_group.primary_key)])
 
+            progress_bar = tqdm(total=dataframe.shape[0], desc="uploading data")
             while True:
                 # if BufferError is thrown, we can be sure, message hasn't been send so we retry
                 try:
@@ -804,10 +807,7 @@ class Engine:
                     )
 
                     # Trigger internal callbacks to empty op queue
-                    with tqdm(
-                        total=dataframe.shape[0], desc="uploading data"
-                    ) as progress_bar:
-                        producer.poll(0)
+                    producer.poll(0)
                     break
                 except BufferError as e:
                     if offline_write_options.get("debug_kafka", False):
@@ -817,6 +817,7 @@ class Engine:
 
         # make sure producer blocks and everything is delivered
         producer.flush()
+        progress_bar.close()
 
         # start backfilling job
         job_name = "{fg_name}_{version}_offline_fg_backfill".format(
