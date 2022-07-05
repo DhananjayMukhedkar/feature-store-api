@@ -792,7 +792,7 @@ class Engine:
             # assemble key
             key = "".join([str(row[pk]) for pk in sorted(feature_group.primary_key)])
 
-            progress_bar = tqdm(total=dataframe.shape[0], desc="uploading data")
+            progress_bar = tqdm(total=dataframe.shape[0], desc="uploading rows")
             while True:
                 # if BufferError is thrown, we can be sure, message hasn't been send so we retry
                 try:
