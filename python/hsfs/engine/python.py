@@ -34,6 +34,7 @@ from pyhive import hive
 from urllib.parse import urlparse
 from typing import TypeVar, Optional, Dict, Any
 from confluent_kafka import Producer
+from tqdm.auto import tqdm
 
 from hsfs import client, feature, util
 from hsfs.core import (
@@ -62,6 +63,11 @@ try:
     HAS_FAST = True
 except ImportError:
     pass
+
+
+def update_progress(progress_bar, increment=1):
+    if progress_bar is not None:
+        progress_bar.update(increment)
 
 
 class Engine:
@@ -753,6 +759,8 @@ class Engine:
         def acked(err, msg):
             if err is not None:
                 print("Failed to deliver message: %s: %s" % (str(msg), str(err)))
+            else:
+                update_progress(progress_bar, 1)
 
         # loop over rows
         for r in dataframe.itertuples(index=False):
@@ -796,7 +804,10 @@ class Engine:
                     )
 
                     # Trigger internal callbacks to empty op queue
-                    producer.poll(0)
+                    with tqdm(
+                        total=dataframe.shape[0], desc="uploading data"
+                    ) as progress_bar:
+                        producer.poll(0)
                     break
                 except BufferError as e:
                     if offline_write_options.get("debug_kafka", False):
