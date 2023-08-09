@@ -818,12 +818,16 @@ class JdbcConnector(StorageConnector):
         # members specific to type of connector
         connection_string=None,
         arguments=None,
+        driver_path=None,
+        driver_name=None,
     ):
         super().__init__(id, name, description, featurestore_id)
 
         # JDBC
         self._connection_string = connection_string
         self._arguments = arguments
+        self._driver_path = driver_path
+        self._driver_name = driver_name
 
     @property
     def connection_string(self):
@@ -836,6 +840,14 @@ class JdbcConnector(StorageConnector):
         the driver is automatically provided in the classpath but you need to set the `driver` argument to
         `com.mysql.cj.jdbc.Driver` when creating the Storage Connector"""
         return self._arguments
+
+    @property
+    def driver_path(self):
+        return self._driver_path
+
+    @property
+    def driver_name(self):
+        return self._driver_name
 
     def spark_options(self):
         """Return prepared options to be passed to Spark, based on the additional

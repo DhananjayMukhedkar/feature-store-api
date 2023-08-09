@@ -901,6 +901,9 @@ class Engine:
 
         return path
 
+    def _setup_jdbc(self, storage_connector, path):
+        return path
+
     def is_spark_dataframe(self, dataframe):
         if isinstance(dataframe, DataFrame):
             return True
