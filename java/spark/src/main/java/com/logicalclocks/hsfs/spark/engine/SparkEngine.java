@@ -23,6 +23,9 @@ import com.amazon.deequ.profiles.ColumnProfiles;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import com.logicalclocks.hsfs.engine.EngineBase;
+import com.logicalclocks.hsfs.metadata.DatasetApi;
+import com.logicalclocks.hsfs.metadata.HopsworksExternalClient;
 import com.logicalclocks.hsfs.metadata.HopsworksInternalClient;
 import com.logicalclocks.hsfs.spark.constructor.Query;
 import com.logicalclocks.hsfs.spark.engine.hudi.HudiEngine;
@@ -37,8 +40,6 @@ import com.logicalclocks.hsfs.constructor.FeatureGroupAlias;
 import com.logicalclocks.hsfs.engine.FeatureGroupUtils;
 import com.logicalclocks.hsfs.FeatureGroupBase;
 import com.logicalclocks.hsfs.metadata.HopsworksClient;
-import com.logicalclocks.hsfs.metadata.HopsworksHttpClient;
-import com.logicalclocks.hsfs.metadata.KafkaApi;
 import com.logicalclocks.hsfs.metadata.OnDemandOptions;
 import com.logicalclocks.hsfs.metadata.Option;
 import com.logicalclocks.hsfs.util.Constants;
@@ -56,6 +57,7 @@ import com.logicalclocks.hsfs.spark.util.StorageConnectorUtils;
 import lombok.Getter;
 import org.apache.avro.Schema;
 import org.apache.avro.SchemaParseException;
+import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.fs.Path;
 import org.apache.spark.SparkFiles;
 import org.apache.spark.sql.Column;
@@ -90,6 +92,8 @@ import org.apache.spark.sql.types.TimestampType;
 import org.json.JSONObject;
 import scala.collection.JavaConverters;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -116,9 +120,11 @@ import static org.apache.spark.sql.functions.from_json;
 import static org.apache.spark.sql.functions.lit;
 import static org.apache.spark.sql.functions.struct;
 
-public class SparkEngine {
+public class SparkEngine extends EngineBase {
 
   private final StorageConnectorUtils storageConnectorUtils = new StorageConnectorUtils();
+
+  private FeatureGroupUtils featureGroupUtils = new FeatureGroupUtils();
 
   private static SparkEngine INSTANCE = null;
 
@@ -139,7 +145,6 @@ public class SparkEngine {
 
   private FeatureGroupUtils utils = new FeatureGroupUtils();
   private HudiEngine hudiEngine = new HudiEngine();
-  private KafkaApi kafkaApi = new KafkaApi();
 
   private SparkEngine() {
     sparkSession = SparkSession.builder()
@@ -493,7 +498,11 @@ public class SparkEngine {
   // OnDemand Feature Group in TFRecords format. However Spark does not use an enum but a string.
   public Dataset<Row> read(StorageConnector storageConnector, String dataFormat,
                            Map<String, String> readOptions, String location) throws FeatureStoreException, IOException {
-    setupConnectorHadoopConf((StorageConnector) storageConnector);
+    if (Strings.isNullOrEmpty(dataFormat)) {
+      throw new FeatureStoreException("dataFormat is not specified.");
+    }
+
+    setupConnectorHadoopConf(storageConnector);
 
     String path = "";
     if (location != null) {
@@ -531,14 +540,24 @@ public class SparkEngine {
   public void writeOnlineDataframe(FeatureGroupBase featureGroupBase, Dataset<Row> dataset, String onlineTopicName,
                                    Map<String, String> writeOptions)
       throws FeatureStoreException, IOException {
-
-    byte[] version = String.valueOf(featureGroupBase.getSubject().getVersion()).getBytes(StandardCharsets.UTF_8);
+    byte[] projectId = String.valueOf(featureGroupBase.getFeatureStore().getProjectId())
+        .getBytes(StandardCharsets.UTF_8);
+    byte[] featureGroupId = String.valueOf(featureGroupBase.getId()).getBytes(StandardCharsets.UTF_8);
+    byte[] subjectId = String.valueOf(featureGroupBase.getSubject().getId()).getBytes(StandardCharsets.UTF_8);
 
     onlineFeatureGroupToAvro(featureGroupBase, encodeComplexFeatures(featureGroupBase, dataset))
         .withColumn("headers", array(
             struct(
-                lit("version").as("key"),
-                lit(version).as("value")
+                lit("projectId").as("key"),
+                lit(projectId).as("value")
+            ),
+            struct(
+                lit("featureGroupId").as("key"),
+                lit(featureGroupId).as("value")
+            ),
+            struct(
+                lit("subjectId").as("key"),
+                lit(subjectId).as("value")
             )
         ))
         .write()
@@ -553,21 +572,34 @@ public class SparkEngine {
                                                  Long timeout, String checkpointLocation,
                                                  Map<String, String> writeOptions)
       throws FeatureStoreException, IOException, StreamingQueryException, TimeoutException {
-    byte[] version = String.valueOf(featureGroupBase.getSubject().getVersion()).getBytes(StandardCharsets.UTF_8);
+    byte[] projectId = String.valueOf(featureGroupBase.getFeatureStore().getProjectId())
+        .getBytes(StandardCharsets.UTF_8);
+    byte[] featureGroupId = String.valueOf(featureGroupBase.getId()).getBytes(StandardCharsets.UTF_8);
+    byte[] subjectId = String.valueOf(featureGroupBase.getSubject().getId()).getBytes(StandardCharsets.UTF_8);
 
+    queryName = makeQueryName(queryName, featureGroupBase);
     DataStreamWriter<Row> writer =
         onlineFeatureGroupToAvro(featureGroupBase, encodeComplexFeatures(featureGroupBase, dataset))
             .withColumn("headers", array(
                 struct(
-                    lit("version").as("key"),
-                    lit(version).as("value")
+                    lit("projectId").as("key"),
+                    lit(projectId).as("value")
+                ),
+                struct(
+                    lit("featureGroupId").as("key"),
+                    lit(featureGroupId).as("value")
+                ),
+                struct(
+                    lit("subjectId").as("key"),
+                    lit(subjectId).as("value")
                 )
             ))
             .writeStream()
             .format(Constants.KAFKA_FORMAT)
             .outputMode(outputMode)
+            .queryName(queryName)
             .option("checkpointLocation", checkpointLocation == null
-                ? checkpointDirPath(queryName, featureGroupBase.getOnlineTopicName())
+                ? checkpointDirPath(queryName)
                 : checkpointLocation)
             .options(writeOptions)
             .option("topic", featureGroupBase.getOnlineTopicName());
@@ -694,7 +726,7 @@ public class SparkEngine {
   }
 
   public void setupConnectorHadoopConf(StorageConnector storageConnector)
-          throws IOException {
+      throws IOException, FeatureStoreException {
     if (storageConnector == null) {
       return;
     }
@@ -878,13 +910,59 @@ public class SparkEngine {
     }
   }
 
-  public String addFile(String filePath) {
+  @Override
+  public String addFile(String filePath) throws FeatureStoreException {
+    if (Strings.isNullOrEmpty(filePath)) {
+      return filePath;
+    }
     // this is used for unit testing
     if (!filePath.startsWith("file://")) {
       filePath = "hdfs://" + filePath;
     }
-    sparkSession.sparkContext().addFile(filePath);
-    return SparkFiles.get((new Path(filePath)).getName());
+
+    String fileName = Paths.get(filePath).getFileName().toString();
+
+    // for hopsworks internal client
+    if (!(HopsworksClient.getInstance().getHopsworksHttpClient() instanceof HopsworksExternalClient)) {
+      sparkSession.sparkContext().addFile(filePath);
+      try {
+        FileUtils.copyFile(new File(SparkFiles.get(fileName)), new File(fileName));
+      } catch (IOException e) {
+        throw new FeatureStoreException("Error setting up file: " + filePath, e);
+      }
+    } else {
+      // for external client then read the file from hive path
+      java.nio.file.Path targetPath = Paths.get(SparkFiles.getRootDirectory(), fileName);
+
+      try (FileOutputStream outputStream = new FileOutputStream(targetPath.toString())) {
+        outputStream.write(DatasetApi.readContent(HopsworksClient.getInstance().getProject().getProjectId(),
+            filePath, "HIVEDB"));
+      } catch (IOException e) {
+        throw new FeatureStoreException("Error setting up file: " + filePath, e);
+      }
+    }
+
+    return fileName;
+  }
+
+  @Override
+  public Map<String, String> getKafkaConfig(FeatureGroupBase featureGroup, Map<String, String> writeOptions)
+      throws FeatureStoreException, IOException {
+    boolean external = !(System.getProperties().containsKey(HopsworksInternalClient.REST_ENDPOINT_SYS)
+        || (writeOptions != null
+        && Boolean.parseBoolean(writeOptions.getOrDefault("internal_kafka", "false"))));
+
+    StorageConnector.KafkaConnector storageConnector =
+        storageConnectorApi.getKafkaStorageConnector(featureGroup.getFeatureStore(), external);
+    storageConnector.setSslTruststoreLocation(addFile(storageConnector.getSslTruststoreLocation()));
+    storageConnector.setSslKeystoreLocation(addFile(storageConnector.getSslKeystoreLocation()));
+
+    Map<String, String> config = storageConnector.sparkOptions();
+
+    if (writeOptions != null) {
+      config.putAll(writeOptions);
+    }
+    return config;
   }
 
   public Dataset<Row> readStream(StorageConnector storageConnector, String dataFormat, String messageFormat,
@@ -945,7 +1023,8 @@ public class SparkEngine {
     return (Dataset<Row>) obj;
   }
 
-  private void setupGcsConnectorHadoopConf(StorageConnector.GcsConnector storageConnector) throws IOException {
+  private void setupGcsConnectorHadoopConf(StorageConnector.GcsConnector storageConnector)
+      throws IOException, FeatureStoreException {
     // The AbstractFileSystem for 'gs:' URIs
     sparkSession.sparkContext().hadoopConfiguration().set(
         Constants.PROPERTY_GCS_FS_KEY, Constants.PROPERTY_GCS_FS_VALUE
@@ -1005,45 +1084,21 @@ public class SparkEngine {
         + "/Resources/" + queryName + "-checkpoint";
   }
 
-  public Map<String, String> getKafkaConfig(FeatureGroupBase featureGroup, Map<String, String> writeOptions)
-      throws FeatureStoreException, IOException {
-    Map<String, String> config = new HashMap<>();
-    boolean internalKafka = false;
-    if (writeOptions != null) {
-      internalKafka = Boolean.parseBoolean(writeOptions.getOrDefault("internal_kafka", "false"));
-      config.putAll(writeOptions);
-    }
-    HopsworksHttpClient client = HopsworksClient.getInstance().getHopsworksHttpClient();
-
-    if (System.getProperties().containsKey(HopsworksInternalClient.REST_ENDPOINT_SYS) || internalKafka) {
-      config.put("kafka.bootstrap.servers",
-          kafkaApi.getBrokerEndpoints(featureGroup.getFeatureStore()).stream().map(broker -> broker.replaceAll(
-              "INTERNAL://", ""))
-            .collect(Collectors.joining(",")));
-    } else {
-      config.put("kafka.bootstrap.servers",
-          kafkaApi.getBrokerEndpoints(featureGroup.getFeatureStore(), true).stream()
-            .map(broker -> broker.replaceAll("EXTERNAL://", ""))
-            .collect(Collectors.joining(","))
-      );
-    }
-
-    config.put("kafka.security.protocol", "SSL");
-    config.put("kafka.ssl.truststore.location", client.getTrustStorePath());
-    config.put("kafka.ssl.truststore.password", client.getCertKey());
-    config.put("kafka.ssl.keystore.location", client.getKeyStorePath());
-    config.put("kafka.ssl.keystore.password", client.getCertKey());
-    config.put("kafka.ssl.key.password", client.getCertKey());
-    config.put("kafka.ssl.endpoint.identification.algorithm", "");
-    return config;
-  }
-
-  public String checkpointDirPath(String queryName, String onlineTopicName) throws FeatureStoreException {
-    if (Strings.isNullOrEmpty(queryName)) {
-      queryName = "insert_stream_" + onlineTopicName;
-    }
+  private String checkpointDirPath(String queryName) throws FeatureStoreException {
     return "/Projects/" + HopsworksClient.getInstance().getProject().getProjectName()
         + "/Resources/" + queryName + "-checkpoint";
+  }
+
+  protected String makeQueryName(String queryName, FeatureGroupBase featureGroup) {
+    if (Strings.isNullOrEmpty(queryName)) {
+      queryName = String.format("insert_stream_%d_%d_%s_%d_onlinefs",
+              featureGroup.getFeatureStore().getProjectId(),
+              featureGroup.getId(),
+              featureGroup.getName(),
+              featureGroup.getVersion()
+      );
+    }
+    return queryName;
   }
 
 }

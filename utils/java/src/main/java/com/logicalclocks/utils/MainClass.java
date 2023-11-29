@@ -73,8 +73,16 @@ public class MainClass {
         .hasArg()
         .build());
 
-    options.addOption(Option.builder("kafkaOffsetReset")
-        .argName("kafkaOffsetReset")
+    options.addOption(Option.builder("initialCheckPointString")
+        .argName("initialCheckPointString")
+        .required(false)
+        .hasArg()
+        .build());
+
+    // This option here is used, however it's here to make the deltastreamer job
+    // working with the Hopsworks scheduler which adds the `start_time` option
+    options.addOption(Option.builder("start_time")
+        .argName("start_time")
         .required(false)
         .hasArg()
         .build());
@@ -84,7 +92,7 @@ public class MainClass {
 
     String op = commandLine.getOptionValue("op");
     String path = commandLine.getOptionValue("path");
-    String kafkaOffsetsReset = commandLine.getOptionValue("kafkaOffsetReset");
+    String initialCheckPointString = commandLine.getOptionValue("initialCheckPointString");
 
     // read jobs config
     Map<String, Object> jobConf = readJobConf(path);
@@ -99,11 +107,11 @@ public class MainClass {
         jobConf.get("version")));
 
     Map<String, String> writeOptions = (Map<String, String>) jobConf.get("write_options");
-    if (kafkaOffsetsReset != null) {
+    if (initialCheckPointString != null) {
       if (writeOptions == null) {
         writeOptions = new HashMap<>();
       }
-      writeOptions.put("kafkaOffsetReset", kafkaOffsetsReset);
+      writeOptions.put("initialCheckPointString", initialCheckPointString);
     }
     LOGGER.info("Hsfs utils write options: {}", writeOptions);
 

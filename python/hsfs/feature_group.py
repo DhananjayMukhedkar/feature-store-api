@@ -15,6 +15,8 @@
 #
 
 import copy
+import time
+
 from hsfs.ge_validation_result import ValidationResult
 import humps
 import json
@@ -60,6 +62,8 @@ from hsfs.core import great_expectation_engine
 class FeatureGroupBase:
     def __init__(
         self,
+        name,
+        version,
         featurestore_id,
         location,
         event_time=None,
@@ -67,13 +71,20 @@ class FeatureGroupBase:
         id=None,
         expectation_suite=None,
         online_topic_name=None,
+        topic_name=None,
+        deprecated=False,
+        **kwargs,
     ):
+        self._version = version
+        self._name = name
         self.event_time = event_time
         self._online_enabled = online_enabled
         self._location = location
         self._id = id
         self._subject = None
         self._online_topic_name = online_topic_name
+        self._topic_name = topic_name
+        self._deprecated = deprecated
         self._feature_store_id = featurestore_id
         # use setter for correct conversion
         self.expectation_suite = expectation_suite
@@ -109,6 +120,14 @@ class FeatureGroupBase:
         self._variable_api = VariableApi()
         self._feature_group_engine = None
         self._multi_part_insert = False
+
+        self.check_deprecated()
+
+    def check_deprecated(self):
+        if self.deprecated:
+            warnings.warn(
+                f"Feature Group `{self._name}`, version `{self._version}` is deprecated"
+            )
 
     def delete(self):
         """Drop the entire feature group along with its feature data.
@@ -573,6 +592,33 @@ class FeatureGroupBase:
             `FeatureGroup`. The updated feature group object.
         """
         self._feature_group_engine.update_description(self, description)
+        return self
+
+    def update_deprecated(self, deprecate: bool = True):
+        """Deprecate the feature group.
+
+        !!! example
+            ```python
+            # connect to the Feature Store
+            fs = ...
+
+            # get the Feature Group instance
+            fg = fs.get_or_create_feature_group(...)
+
+            fg.update_deprecated(deprecate=True)
+            ```
+
+        !!! info "Safe update"
+            This method updates the feature group safely. In case of failure
+            your local metadata object will be kept unchanged.
+
+        # Arguments
+            deprecate: Boolean value identifying if the feature group should be deprecated. Defaults to True.
+
+        # Returns
+            `FeatureGroup`. The updated feature group object.
+        """
+        self._feature_group_engine.update_deprecated(self, deprecate)
         return self
 
     def update_features(self, features: Union[feature.Feature, List[feature.Feature]]):
@@ -1124,6 +1170,35 @@ class FeatureGroupBase:
             )
 
     @property
+    def feature_store_id(self):
+        return self._feature_store_id
+
+    @property
+    def feature_store(self):
+        return self._feature_store
+
+    @feature_store.setter
+    def feature_store(self, feature_store):
+        self._feature_store = feature_store
+
+    @property
+    def name(self):
+        """Name of the feature group."""
+        return self._name
+
+    @property
+    def version(self):
+        """Version number of the feature group."""
+        return self._version
+
+    @version.setter
+    def version(self, version):
+        self._version = version
+
+    def get_fg_name(self):
+        return f"{self.name}_{self.version}"
+
+    @property
     def statistics(self):
         """Get the latest computed statistics for the feature group."""
         return self._statistics_engine.get_last(self)
@@ -1290,6 +1365,24 @@ class FeatureGroupBase:
         self._online_enabled = online_enabled
 
     @property
+    def topic_name(self):
+        """The topic used for feature group data ingestion."""
+        return self._topic_name
+
+    @topic_name.setter
+    def topic_name(self, topic_name):
+        self._topic_name = topic_name
+
+    @property
+    def deprecated(self):
+        """Setting if the feature group is deprecated."""
+        return self._deprecated
+
+    @deprecated.setter
+    def deprecated(self, deprecated):
+        self._deprecated = deprecated
+
+    @property
     def subject(self):
         """Subject of the feature group."""
         if self._subject is None:
@@ -1370,14 +1463,19 @@ class FeatureGroup(FeatureGroupBase):
         time_travel_format=None,
         statistics_config=None,
         online_topic_name=None,
+        topic_name=None,
         event_time=None,
         stream=False,
         expectation_suite=None,
         parents=None,
         href=None,
         delta_streamer_job_conf=None,
+        deprecated=False,
+        **kwargs,
     ):
         super().__init__(
+            name,
+            version,
             featurestore_id,
             location,
             event_time=event_time,
@@ -1385,14 +1483,14 @@ class FeatureGroup(FeatureGroupBase):
             id=id,
             expectation_suite=expectation_suite,
             online_topic_name=online_topic_name,
+            topic_name=topic_name,
+            deprecated=deprecated,
         )
 
         self._feature_store_name = featurestore_name
         self._description = description
         self._created = created
         self._creator = user.User.from_response_json(creator)
-        self._version = version
-        self._name = name
         self._features = [
             feature.Feature.from_response_json(feat) if isinstance(feat, dict) else feat
             for feat in (features or [])
@@ -1518,6 +1616,8 @@ class FeatureGroup(FeatureGroupBase):
                 For python engine:
                 * key `"use_hive"` and value `True` to read feature group
                   with Hive instead of [ArrowFlight Server](https://docs.hopsworks.ai/latest/setup_installation/common/arrow_flight_duckdb/).
+                * key `"arrow_flight_config"` to pass a dictionary of arrow flight configurations.
+                  For example: `{"arrow_flight_config": {"timeout": 900}}`
                 * key `"hive_config"` to pass a dictionary of hive or tez configurations.
                   For example: `{"hive_config": {"hive.tez.cpu.vcores": 2, "tez.grouping.split-count": "3"}}`
                 * key `"pandas_types"` and value `True` to retrieve columns as
@@ -1768,10 +1868,9 @@ class FeatureGroup(FeatureGroupBase):
         """Persist the metadata and materialize the feature group to the feature store
         or insert data from a dataframe into the existing feature group.
 
-        Incrementally insert data to a feature group or overwrite all  data contained in the feature group. By
+        Incrementally insert data to a feature group or overwrite all data contained in the feature group. By
         default, the data is inserted into the offline storage as well as the online storage if the feature group is
-        `online_enabled=True`. To insert only into the online or offline storage set `storage="online"` or
-        `storage="offline"` respectively.
+        `online_enabled=True`.
 
         The `features` dataframe can be a Spark DataFrame or RDD, a Pandas DataFrame,
         or a two-dimensional Numpy array or a two-dimensional Python nested list.
@@ -1780,7 +1879,7 @@ class FeatureGroup(FeatureGroupBase):
         If feature group's time travel format is `HUDI` then `operation` argument can be
         either `insert` or `upsert`.
 
-        If feature group doesn't exists  the insert method will create the necessary metadata the first time it is
+        If feature group doesn't exist the insert method will create the necessary metadata the first time it is
         invoked and writes the specified `features` dataframe as feature group to the online/offline feature store.
 
         !!! warning "Changed in 3.3.0"
@@ -1839,7 +1938,7 @@ class FeatureGroup(FeatureGroupBase):
                 Defaults to `"upsert"`.
             storage: Overwrite default behaviour, write to offline
                 storage only with `"offline"` or online only with `"online"`, defaults
-                to `None`.
+                to `None` (If the streaming APIs are enabled, specifying the storage option is not supported).
             write_options: Additional write options as key-value pairs, defaults to `{}`.
                 When using the `python` engine, write_options can contain the
                 following entries:
@@ -1876,6 +1975,11 @@ class FeatureGroup(FeatureGroupBase):
         # Returns
             (`Job`, `ValidationReport`) A tuple with job information if python engine is used and the validation report if validation is enabled.
         """
+        if storage and self.stream:
+            warnings.warn(
+                "Specifying the storage option is not supported if the streaming APIs are enabled"
+            )
+
         feature_dataframe = engine.get_instance().convert_to_default_dataframe(features)
 
         if write_options is None:
@@ -2425,31 +2529,20 @@ class FeatureGroup(FeatureGroupBase):
             "eventTime": self.event_time,
             "expectationSuite": self._expectation_suite,
             "parents": self._parents,
+            "topicName": self.topic_name,
+            "deprecated": self.deprecated,
         }
         if self._stream:
             fg_meta_dict["deltaStreamerJobConf"] = self._deltastreamer_jobconf
         return fg_meta_dict
 
     def _get_table_name(self):
-        return self.feature_store_name + "." + self.name + "_" + str(self.version)
-
-    def _get_online_table_name(self):
-        return self.name + "_" + str(self.version)
+        return self.feature_store_name + "." + self.get_fg_name()
 
     @property
     def id(self):
         """Feature group id."""
         return self._id
-
-    @property
-    def name(self):
-        """Name of the feature group."""
-        return self._name
-
-    @property
-    def version(self):
-        """Version number of the feature group."""
-        return self._version
 
     @property
     def description(self):
@@ -2470,10 +2563,6 @@ class FeatureGroup(FeatureGroupBase):
     def hudi_precombine_key(self):
         """Feature name that is the hudi precombine key."""
         return self._hudi_precombine_key
-
-    @property
-    def feature_store_id(self):
-        return self._feature_store_id
 
     @property
     def feature_store_name(self):
@@ -2505,27 +2594,26 @@ class FeatureGroup(FeatureGroupBase):
     def materialization_job(self):
         """Get the Job object reference for the materialization job for this
         Feature Group."""
-        if self._materialization_job is None:
-            try:
-                job_name = "{fg_name}_{version}_offline_fg_materialization".format(
-                    fg_name=self._name, version=self._version
-                )
-                self._materialization_job = job_api.JobApi().get(job_name)
-            except RestAPIError as e:
-                if (
-                    e.response.json().get("errorCode", "") == 130009
-                    and e.response.status_code == 404
-                ):
-                    job_name = "{fg_name}_{version}_offline_fg_backfill".format(
-                        fg_name=self._name, version=self._version
-                    )
-                    self._materialization_job = job_api.JobApi().get(job_name)
-
-        return self._materialization_job
-
-    @version.setter
-    def version(self, version):
-        self._version = version
+        if self._materialization_job is not None:
+            return self._materialization_job
+        else:
+            feature_group_name = util.feature_group_name(self)
+            job_suffix_list = ["materialization", "backfill"]
+            for job_suffix in job_suffix_list:
+                job_name = "{}_offline_fg_{}".format(feature_group_name, job_suffix)
+                for _ in range(3):  # retry starting job
+                    try:
+                        self._materialization_job = job_api.JobApi().get(job_name)
+                        return self._materialization_job
+                    except RestAPIError as e:
+                        if e.response.status_code == 404:
+                            if e.response.json().get("errorCode", "") == 130009:
+                                break  # no need to retry, since no such job exists
+                            else:
+                                time.sleep(1)  # backoff and then retry
+                                continue
+                        raise e
+            raise FeatureStoreException("No materialization job was found")
 
     @description.setter
     def description(self, new_description):
@@ -2580,9 +2668,14 @@ class ExternalFeatureGroup(FeatureGroupBase):
         online_enabled=False,
         href=None,
         online_topic_name=None,
+        topic_name=None,
         spine=False,
+        deprecated=False,
+        **kwargs,
     ):
         super().__init__(
+            name,
+            version,
             featurestore_id,
             location,
             event_time=event_time,
@@ -2590,14 +2683,14 @@ class ExternalFeatureGroup(FeatureGroupBase):
             id=id,
             expectation_suite=expectation_suite,
             online_topic_name=online_topic_name,
+            topic_name=topic_name,
+            deprecated=deprecated,
         )
 
         self._feature_store_name = featurestore_name
         self._description = description
         self._created = created
         self._creator = user.User.from_response_json(creator)
-        self._version = version
-        self._name = name
         self._query = query
         self._data_format = data_format.upper() if data_format else None
         self._path = path
@@ -2850,19 +2943,13 @@ class ExternalFeatureGroup(FeatureGroupBase):
             "expectationSuite": self._expectation_suite,
             "onlineEnabled": self._online_enabled,
             "spine": False,
+            "topicName": self.topic_name,
+            "deprecated": self.deprecated,
         }
 
     @property
     def id(self):
         return self._id
-
-    @property
-    def name(self):
-        return self._name
-
-    @property
-    def version(self):
-        return self._version
 
     @property
     def description(self):
@@ -2896,10 +2983,6 @@ class ExternalFeatureGroup(FeatureGroupBase):
     def created(self):
         return self._created
 
-    @version.setter
-    def version(self, version):
-        self._version = version
-
     @description.setter
     def description(self, new_description):
         self._description = new_description
@@ -2908,11 +2991,6 @@ class ExternalFeatureGroup(FeatureGroupBase):
     def feature_store_name(self):
         """Name of the feature store in which the feature group is located."""
         return self._feature_store_name
-
-    @property
-    def feature_store_id(self):
-        """Id of the feature store in which the feature group is located."""
-        return self._feature_store_id
 
 
 class SpineGroup(FeatureGroupBase):
@@ -2943,10 +3021,15 @@ class SpineGroup(FeatureGroupBase):
         online_enabled=False,
         href=None,
         online_topic_name=None,
+        topic_name=None,
         spine=True,
         dataframe="spine",
+        deprecated=False,
+        **kwargs,
     ):
         super().__init__(
+            name,
+            version,
             featurestore_id,
             location,
             event_time=event_time,
@@ -2954,14 +3037,14 @@ class SpineGroup(FeatureGroupBase):
             id=id,
             expectation_suite=expectation_suite,
             online_topic_name=online_topic_name,
+            topic_name=topic_name,
+            deprecated=deprecated,
         )
 
         self._feature_store_name = featurestore_name
         self._description = description
         self._created = created
         self._creator = user.User.from_response_json(creator)
-        self._version = version
-        self._name = name
 
         self._features = [
             feature.Feature.from_response_json(feat) if isinstance(feat, dict) else feat
@@ -3080,4 +3163,6 @@ class SpineGroup(FeatureGroupBase):
             "statisticsConfig": self._statistics_config,
             "eventTime": self._event_time,
             "spine": True,
+            "topicName": self.topic_name,
+            "deprecated": self.deprecated,
         }

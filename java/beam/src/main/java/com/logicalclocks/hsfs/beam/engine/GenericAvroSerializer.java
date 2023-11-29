@@ -15,29 +15,24 @@
  *
  */
 
-package com.logicalclocks.hsfs.flink.engine;
-
+package com.logicalclocks.hsfs.beam.engine;
 
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.io.BinaryEncoder;
 import org.apache.avro.io.DatumWriter;
 import org.apache.avro.io.EncoderFactory;
 import org.apache.avro.reflect.ReflectDatumWriter;
-import org.apache.flink.api.common.serialization.SerializationSchema;
+import org.apache.kafka.common.serialization.Serializer;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-public class GenericRecordAvroSerializer implements SerializationSchema<GenericRecord> {
-
-  public GenericRecordAvroSerializer(){
-  }
+public class GenericAvroSerializer implements Serializer<GenericRecord> {
 
   @Override
-  public byte[] serialize(GenericRecord genericRecord) {
-
+  public byte[] serialize(String topic, GenericRecord genericRecord) {
     DatumWriter<GenericRecord> datumWriter = new ReflectDatumWriter<>(genericRecord.getSchema());
     ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
     byteArrayOutputStream.reset();
@@ -60,4 +55,5 @@ public class GenericRecordAvroSerializer implements SerializationSchema<GenericR
     }
     return byteArrayOutputStream.toByteArray();
   }
+
 }

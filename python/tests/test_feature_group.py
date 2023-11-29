@@ -28,7 +28,7 @@ from hsfs import (
     feature_group_writer,
 )
 from hsfs.engine import python
-from hsfs.client.exceptions import FeatureStoreException
+from hsfs.client.exceptions import FeatureStoreException, RestAPIError
 import pytest
 import warnings
 
@@ -158,6 +158,44 @@ class TestFeatureGroup:
         assert fg.event_time is None
         assert fg.stream is False
         assert fg.expectation_suite is None
+        assert fg.deprecated is False
+
+    def test_from_response_json_basic_info_deprecated(self, backend_fixtures):
+        # Arrange
+        json = backend_fixtures["feature_group"]["get_basic_info_deprecated"][
+            "response"
+        ]
+
+        # Act
+        with warnings.catch_warnings(record=True) as warning_record:
+            fg = feature_group.FeatureGroup.from_response_json(json)
+
+        # Assert
+        assert fg.name == "fg_test"
+        assert fg.version == 1
+        assert fg._feature_store_id == 67
+        assert fg.description == ""
+        assert fg.partition_key == []
+        assert fg.primary_key == []
+        assert fg.hudi_precombine_key is None
+        assert fg._feature_store_name is None
+        assert fg.created is None
+        assert fg.creator is None
+        assert fg.id == 15
+        assert len(fg.features) == 0
+        assert fg.location is None
+        assert fg.online_enabled is False
+        assert fg.time_travel_format is None
+        assert isinstance(fg.statistics_config, statistics_config.StatisticsConfig)
+        assert fg._online_topic_name is None
+        assert fg.event_time is None
+        assert fg.stream is False
+        assert fg.expectation_suite is None
+        assert fg.deprecated is True
+        assert len(warning_record) == 1
+        assert str(warning_record[0].message) == (
+            f"Feature Group `{fg.name}`, version `{fg.version}` is deprecated"
+        )
 
     def test_from_response_json_stream(self, backend_fixtures):
         # Arrange
@@ -342,6 +380,80 @@ class TestFeatureGroup:
         # make sure it still was called only once
         mock_job_api.assert_called_once
         assert fg.materialization_job == mock_job
+
+    def test_materialization_job_retry_success(self, mocker):
+        # Arrange
+        mocker.patch("time.sleep")
+
+        mock_response_job_not_found = mocker.Mock()
+        mock_response_job_not_found.status_code = 404
+        mock_response_job_not_found.json.return_value = {"errorCode": 130009}
+
+        mock_response_not_found = mocker.Mock()
+        mock_response_not_found.status_code = 404
+
+        mock_job = mocker.Mock()
+
+        mock_job_api = mocker.patch(
+            "hsfs.core.job_api.JobApi.get",
+            side_effect=[
+                RestAPIError("", mock_response_job_not_found),
+                RestAPIError("", mock_response_not_found),
+                RestAPIError("", mock_response_not_found),
+                mock_job,
+            ],
+        )
+
+        fg = feature_group.FeatureGroup(
+            name="test_fg",
+            version=2,
+            featurestore_id=99,
+            primary_key=[],
+            partition_key=[],
+            id=10,
+        )
+
+        # Act
+        job_result = fg.materialization_job
+
+        # Assert
+        assert job_result is mock_job
+        assert mock_job_api.call_count == 4
+        assert mock_job_api.call_args_list[0][0] == (
+            "test_fg_2_offline_fg_materialization",
+        )
+        assert mock_job_api.call_args_list[1][0] == ("test_fg_2_offline_fg_backfill",)
+        assert mock_job_api.call_args_list[2][0] == ("test_fg_2_offline_fg_backfill",)
+        assert mock_job_api.call_args_list[3][0] == ("test_fg_2_offline_fg_backfill",)
+
+    def test_materialization_job_retry_fail(self, mocker):
+        # Arrange
+        mocker.patch("time.sleep")
+
+        mock_response_not_found = mocker.Mock()
+        mock_response_not_found.status_code = 404
+
+        mock_job_api = mocker.patch(
+            "hsfs.core.job_api.JobApi.get",
+            side_effect=RestAPIError("", mock_response_not_found),
+        )
+
+        fg = feature_group.FeatureGroup(
+            name="test_fg",
+            version=2,
+            featurestore_id=99,
+            primary_key=[],
+            partition_key=[],
+            id=10,
+        )
+
+        # Act
+        with pytest.raises(FeatureStoreException) as e_info:
+            fg.materialization_job
+
+        # Assert
+        assert mock_job_api.call_count == 6
+        assert str(e_info.value) == "No materialization job was found"
 
     def test_multi_part_insert_return_writer(self, mocker):
         fg = feature_group.FeatureGroup(

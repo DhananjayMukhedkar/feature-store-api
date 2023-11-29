@@ -15,6 +15,7 @@
 #
 
 import os
+import shutil
 import json
 import copy
 import importlib.util
@@ -78,7 +79,12 @@ from hsfs.feature_group import ExternalFeatureGroup, SpineGroup
 from hsfs.storage_connector import StorageConnector
 from hsfs.client.exceptions import FeatureStoreException
 from hsfs.client import hopsworks
-from hsfs.core import hudi_engine, transformation_function_engine, kafka_api
+from hsfs.core import (
+    hudi_engine,
+    transformation_function_engine,
+    storage_connector_api,
+    dataset_api,
+)
 from hsfs.constructor import query
 from hsfs.training_dataset_split import TrainingDatasetSplit
 
@@ -110,9 +116,8 @@ class Engine:
         if importlib.util.find_spec("pydoop"):
             # If we are on Databricks don't setup Pydoop as it's not available and cannot be easily installed.
             util.setup_pydoop()
-
-        self._kafka_api = kafka_api.KafkaApi()
-        self._kafka_config = None
+        self._storage_connector_api = storage_connector_api.StorageConnectorApi()
+        self._dataset_api = dataset_api.DatasetApi()
 
     def sql(
         self,
@@ -325,20 +330,39 @@ class Engine:
         checkpoint_dir,
         write_options,
     ):
-        write_options = self._get_kafka_config(write_options)
+        write_options = self._get_kafka_config(
+            feature_group.feature_store_id, write_options
+        )
         serialized_df = self._online_fg_to_avro(
             feature_group, self._encode_complex_features(feature_group, dataframe)
         )
 
-        if query_name is None:
-            query_name = "insert_stream_" + feature_group._online_topic_name
+        project_id = str(feature_group.feature_store.project_id)
+        feature_group_id = str(feature_group._id)
+        subject_id = str(feature_group.subject["id"]).encode("utf8")
 
-        version = str(feature_group.subject["version"]).encode("utf8")
+        if query_name is None:
+            query_name = (
+                f"insert_stream_{project_id}_{feature_group_id}"
+                f"_{feature_group.name}_{feature_group.version}_onlinefs"
+            )
 
         query = (
             serialized_df.withColumn(
                 "headers",
-                array(struct(lit("version").alias("key"), lit(version).alias("value"))),
+                array(
+                    struct(
+                        lit("projectId").alias("key"),
+                        lit(project_id.encode("utf8")).alias("value"),
+                    ),
+                    struct(
+                        lit("featureGroupId").alias("key"),
+                        lit(feature_group_id.encode("utf8")).alias("value"),
+                    ),
+                    struct(
+                        lit("subjectId").alias("key"), lit(subject_id).alias("value")
+                    ),
+                ),
             )
             .writeStream.outputMode(output_mode)
             .format(self.KAFKA_FORMAT)
@@ -393,17 +417,28 @@ class Engine:
             )
 
     def _save_online_dataframe(self, feature_group, dataframe, write_options):
-        write_options = self._get_kafka_config(write_options)
+        write_options = self._get_kafka_config(
+            feature_group.feature_store_id, write_options
+        )
 
         serialized_df = self._online_fg_to_avro(
             feature_group, self._encode_complex_features(feature_group, dataframe)
         )
 
-        version = str(feature_group.subject["version"]).encode("utf8")
+        project_id = str(feature_group.feature_store.project_id).encode("utf8")
+        feature_group_id = str(feature_group._id).encode("utf8")
+        subject_id = str(feature_group.subject["id"]).encode("utf8")
 
         serialized_df.withColumn(
             "headers",
-            array(struct(lit("version").alias("key"), lit(version).alias("value"))),
+            array(
+                struct(lit("projectId").alias("key"), lit(project_id).alias("value")),
+                struct(
+                    lit("featureGroupId").alias("key"),
+                    lit(feature_group_id).alias("value"),
+                ),
+                struct(lit("subjectId").alias("key"), lit(subject_id).alias("value")),
+            ),
         ).write.format(self.KAFKA_FORMAT).options(**write_options).option(
             "topic", feature_group._online_topic_name
         ).save()
@@ -468,6 +503,9 @@ class Engine:
             return df_new, labels_df
         else:
             return df, None
+
+    def drop_columns(self, df, drop_cols):
+        return df.drop(*drop_cols)
 
     def write_training_dataset(
         self,
@@ -630,6 +668,9 @@ class Engine:
         feature_dataframe.unpersist()
 
     def read(self, storage_connector, data_format, read_options, location):
+        if not data_format:
+            raise FeatureStoreException("data_format is not specified")
+
         if isinstance(location, str):
             if data_format.lower() in ["delta", "parquet", "hudi", "orc", "bigquery"]:
                 # All the above data format readers can handle partitioning
@@ -712,12 +753,33 @@ class Engine:
         return stream.load().select("key", "value")
 
     def add_file(self, file):
+        if not file:
+            return file
+
         # This is used for unit testing
         if not file.startswith("file://"):
             file = "hdfs://" + file
 
-        self._spark_context.addFile(file)
-        return SparkFiles.get(os.path.basename(file))
+        file_name = os.path.basename(file)
+
+        # for external clients, download the file
+        if isinstance(client.get_instance(), client.external.Client):
+            tmp_file = os.path.join(SparkFiles.getRootDirectory(), file_name)
+            print("Reading key file from storage connector.")
+            response = self._dataset_api.read_content(tmp_file, "HIVEDB")
+
+            with open(tmp_file, "wb") as f:
+                f.write(response.content)
+        else:
+            self._spark_context.addFile(file)
+
+            # The file is not added to the driver current working directory
+            # We should add it manually by copying from the download location
+            # The file will be added to the executors current working directory
+            # before the next task is executed
+            shutil.copy(SparkFiles.get(file_name), file_name)
+
+        return file_name
 
     def profile(
         self,
@@ -1131,39 +1193,21 @@ class Engine:
             df = df.withColumn(_feat, col(_feat).cast(pyspark_schema[_feat]))
         return df
 
-    def _get_kafka_config(self, write_options: dict = {}) -> dict:
-        if self._kafka_config is None:
-            self._kafka_config = {
-                "kafka.security.protocol": "SSL",
-                "kafka.ssl.truststore.location": client.get_instance()._get_jks_trust_store_path(),
-                "kafka.ssl.truststore.password": client.get_instance()._cert_key,
-                "kafka.ssl.keystore.location": client.get_instance()._get_jks_key_store_path(),
-                "kafka.ssl.keystore.password": client.get_instance()._cert_key,
-                "kafka.ssl.key.password": client.get_instance()._cert_key,
-                "kafka.ssl.endpoint.identification.algorithm": "",
-            }
-            if isinstance(client.get_instance(), hopsworks.Client) or write_options.get(
-                "internal_kafka", False
-            ):
-                self._kafka_config["kafka.bootstrap.servers"] = ",".join(
-                    [
-                        endpoint.replace("INTERNAL://", "")
-                        for endpoint in self._kafka_api.get_broker_endpoints(
-                            externalListeners=False
-                        )
-                    ]
-                )
-            else:
-                self._kafka_config["kafka.bootstrap.servers"] = ",".join(
-                    [
-                        endpoint.replace("EXTERNAL://", "")
-                        for endpoint in self._kafka_api.get_broker_endpoints(
-                            externalListeners=True
-                        )
-                    ]
-                )
+    def _get_kafka_config(
+        self, feature_store_id: int, write_options: dict = {}
+    ) -> dict:
+        external = not (
+            isinstance(client.get_instance(), hopsworks.Client)
+            or write_options.get("internal_kafka", False)
+        )
 
-        return {**write_options, **self._kafka_config}
+        storage_connector = self._storage_connector_api.get_kafka_connector(
+            feature_store_id, external
+        )
+
+        config = storage_connector.spark_options()
+        config.update(write_options)
+        return config
 
     @staticmethod
     def is_connector_type_supported(type):

@@ -37,6 +37,7 @@ from hsfs import (
     storage_connector,
     expectation_suite,
     feature_view,
+    usage,
 )
 from hsfs.core import (
     feature_group_api,
@@ -57,11 +58,8 @@ class FeatureStore:
         featurestore_id,
         featurestore_name,
         created,
-        hdfs_store_path,
         project_name,
         project_id,
-        featurestore_description,
-        inode_id,
         offline_featurestore_name,
         hive_endpoint,
         online_enabled,
@@ -72,15 +70,13 @@ class FeatureStore:
         online_featurestore_name=None,
         mysql_server_endpoint=None,
         online_featurestore_size=None,
+        **kwargs,
     ):
         self._id = featurestore_id
         self._name = featurestore_name
         self._created = created
-        self._hdfs_store_path = hdfs_store_path
         self._project_name = project_name
         self._project_id = project_id
-        self._description = featurestore_description
-        self._inode_id = inode_id
         self._online_feature_store_name = online_featurestore_name
         self._online_feature_store_size = online_featurestore_size
         self._offline_feature_store_name = offline_featurestore_name
@@ -92,10 +88,8 @@ class FeatureStore:
         self._num_storage_connectors = num_storage_connectors
         self._num_feature_views = num_feature_views
 
-        self._feature_group_api = feature_group_api.FeatureGroupApi(self._id)
-        self._storage_connector_api = storage_connector_api.StorageConnectorApi(
-            self._id
-        )
+        self._feature_group_api = feature_group_api.FeatureGroupApi()
+        self._storage_connector_api = storage_connector_api.StorageConnectorApi()
         self._training_dataset_api = training_dataset_api.TrainingDatasetApi(self._id)
 
         self._feature_group_engine = feature_group_engine.FeatureGroupEngine(self._id)
@@ -108,6 +102,10 @@ class FeatureStore:
     @classmethod
     def from_response_json(cls, json_dict):
         json_decamelized = humps.decamelize(json_dict)
+        # fields below are removed from 3.4. remove them for backward compatibility.
+        json_decamelized.pop("hdfs_store_path", None)
+        json_decamelized.pop("featurestore_description", None)
+        json_decamelized.pop("inode_id", None)
         return cls(**json_decamelized)
 
     def get_feature_group(self, name: str, version: int = None):
@@ -147,9 +145,11 @@ class FeatureStore:
                 util.VersionWarning,
             )
             version = self.DEFAULT_VERSION
-        return self._feature_group_api.get(
-            name, version, feature_group_api.FeatureGroupApi.CACHED
+        feature_group_object = self._feature_group_api.get(
+            self.id, name, version, feature_group_api.FeatureGroupApi.CACHED
         )
+        feature_group_object.feature_store = self
+        return feature_group_object
 
     def get_feature_groups(self, name: str):
         """Get a list of all versions of a feature group entity from the feature store.
@@ -177,10 +177,14 @@ class FeatureStore:
         # Raises
             `hsfs.client.exceptions.RestAPIError`: If unable to retrieve feature group from the feature store.
         """
-        return self._feature_group_api.get(
-            name, None, feature_group_api.FeatureGroupApi.CACHED
+        feature_group_object = self._feature_group_api.get(
+            self.id, name, None, feature_group_api.FeatureGroupApi.CACHED
         )
+        for fg_object in feature_group_object:
+            fg_object.feature_store = self
+        return feature_group_object
 
+    @usage.method_logger
     def get_on_demand_feature_group(self, name: str, version: int = None):
         """Get a external feature group entity from the feature store.
 
@@ -204,6 +208,7 @@ class FeatureStore:
         """
         return self.get_external_feature_group(name, version)
 
+    @usage.method_logger
     def get_external_feature_group(self, name: str, version: int = None):
         """Get a external feature group entity from the feature store.
 
@@ -238,10 +243,13 @@ class FeatureStore:
                 util.VersionWarning,
             )
             version = self.DEFAULT_VERSION
-        return self._feature_group_api.get(
-            name, version, feature_group_api.FeatureGroupApi.ONDEMAND
+        feature_group_object = self._feature_group_api.get(
+            self.id, name, version, feature_group_api.FeatureGroupApi.ONDEMAND
         )
+        feature_group_object.feature_store = self
+        return feature_group_object
 
+    @usage.method_logger
     def get_on_demand_feature_groups(self, name: str):
         """Get a list of all versions of an external feature group entity from the feature store.
 
@@ -263,6 +271,7 @@ class FeatureStore:
         """
         return self.get_external_feature_groups(name)
 
+    @usage.method_logger
     def get_external_feature_groups(self, name: str):
         """Get a list of all versions of an external feature group entity from the feature store.
 
@@ -287,9 +296,12 @@ class FeatureStore:
         # Raises
             `hsfs.client.exceptions.RestAPIError`: If unable to retrieve feature group from the feature store.
         """
-        return self._feature_group_api.get(
-            name, None, feature_group_api.FeatureGroupApi.ONDEMAND
+        feature_group_object = self._feature_group_api.get(
+            self.id, name, None, feature_group_api.FeatureGroupApi.ONDEMAND
         )
+        for fg_object in feature_group_object:
+            fg_object.feature_store = self
+        return feature_group_object
 
     def get_training_dataset(self, name: str, version: int = None):
         """Get a training dataset entity from the feature store.
@@ -347,6 +359,7 @@ class FeatureStore:
         """
         return self._training_dataset_api.get(name, None)
 
+    @usage.method_logger
     def get_storage_connector(self, name: str):
         """Get a previously created storage connector from the feature store.
 
@@ -372,7 +385,7 @@ class FeatureStore:
         # Returns
             `StorageConnector`. Storage connector object.
         """
-        return self._storage_connector_api.get(name)
+        return self._storage_connector_api.get(self._id, name)
 
     def sql(
         self,
@@ -416,6 +429,7 @@ class FeatureStore:
             query, self._name, dataframe_type, online, read_options
         )
 
+    @usage.method_logger
     def get_online_storage_connector(self):
         """Get the storage connector for the Online Feature Store of the respective
         project's feature store.
@@ -433,8 +447,9 @@ class FeatureStore:
         # Returns
             `StorageConnector`. JDBC storage connector to the Online Feature Store.
         """
-        return self._storage_connector_api.get_online_connector()
+        return self._storage_connector_api.get_online_connector(self._id)
 
+    @usage.method_logger
     def create_feature_group(
         self,
         name: str,
@@ -453,6 +468,7 @@ class FeatureStore:
             Union[expectation_suite.ExpectationSuite, ge.core.ExpectationSuite]
         ] = None,
         parents: Optional[List[feature_group.FeatureGroup]] = [],
+        topic_name: Optional[str] = None,
     ):
         """Create a feature group metadata object.
 
@@ -526,11 +542,13 @@ class FeatureStore:
                 Defaults to `None`.
             parents: Optionally, Define the parents of this feature group as the
                 origin where the data is coming from.
+            topic_name: Optionally, define the name of the topic used for data ingestion. If left undefined it
+                defaults to using project topic.
 
         # Returns
             `FeatureGroup`. The feature group metadata object.
         """
-        return feature_group.FeatureGroup(
+        feature_group_object = feature_group.FeatureGroup(
             name=name,
             version=version,
             description=description,
@@ -547,8 +565,12 @@ class FeatureStore:
             stream=stream,
             expectation_suite=expectation_suite,
             parents=parents,
+            topic_name=topic_name,
         )
+        feature_group_object.feature_store = self
+        return feature_group_object
 
+    @usage.method_logger
     def get_or_create_feature_group(
         self,
         name: str,
@@ -567,6 +589,7 @@ class FeatureStore:
         event_time: Optional[str] = None,
         stream: Optional[bool] = False,
         parents: Optional[List[feature_group.FeatureGroup]] = [],
+        topic_name: Optional[str] = None,
     ):
         """Get feature group metadata object or create a new one if it doesn't exist. This method doesn't update existing feature group metadata object.
 
@@ -638,20 +661,24 @@ class FeatureStore:
                 to both online and offline store.
             parents: Optionally, Define the parents of this feature group as the
                 origin where the data is coming from.
+            topic_name: Optionally, define the name of the topic used for data ingestion. If left undefined it
+                defaults to using project topic.
 
         # Returns
             `FeatureGroup`. The feature group metadata object.
         """
         try:
-            return self._feature_group_api.get(
-                name, version, feature_group_api.FeatureGroupApi.CACHED
+            feature_group_object = self._feature_group_api.get(
+                self.id, name, version, feature_group_api.FeatureGroupApi.CACHED
             )
+            feature_group_object.feature_store = self
+            return feature_group_object
         except exceptions.RestAPIError as e:
             if (
                 e.response.json().get("errorCode", "") == 270009
                 and e.response.status_code == 404
             ):
-                return feature_group.FeatureGroup(
+                feature_group_object = feature_group.FeatureGroup(
                     name=name,
                     version=version,
                     description=description,
@@ -668,10 +695,14 @@ class FeatureStore:
                     stream=stream,
                     expectation_suite=expectation_suite,
                     parents=parents,
+                    topic_name=topic_name,
                 )
+                feature_group_object.feature_store = self
+                return feature_group_object
             else:
                 raise e
 
+    @usage.method_logger
     def create_on_demand_feature_group(
         self,
         name: str,
@@ -689,6 +720,7 @@ class FeatureStore:
         expectation_suite: Optional[
             Union[expectation_suite.ExpectationSuite, ge.core.ExpectationSuite]
         ] = None,
+        topic_name: Optional[str] = None,
     ):
         """Create a external feature group metadata object.
 
@@ -739,6 +771,8 @@ class FeatureStore:
             event_time: Optionally, provide the name of the feature containing the event
                 time for the features in this feature group. If event_time is set
                 the feature group can be used for point-in-time joins. Defaults to `None`.
+            topic_name: Optionally, define the name of the topic used for data ingestion. If left undefined it
+                defaults to using project topic.
 
                 !!!note "Event time data type restriction"
                     The supported data types for the event time column are: `timestamp`, `date` and `bigint`.
@@ -750,7 +784,7 @@ class FeatureStore:
         # Returns
             `ExternalFeatureGroup`. The external feature group metadata object.
         """
-        return feature_group.ExternalFeatureGroup(
+        feature_group_object = feature_group.ExternalFeatureGroup(
             name=name,
             query=query,
             data_format=data_format,
@@ -766,8 +800,12 @@ class FeatureStore:
             statistics_config=statistics_config,
             event_time=event_time,
             expectation_suite=expectation_suite,
+            topic_name=topic_name,
         )
+        feature_group_object.feature_store = self
+        return feature_group_object
 
+    @usage.method_logger
     def create_external_feature_group(
         self,
         name: str,
@@ -786,6 +824,7 @@ class FeatureStore:
             Union[expectation_suite.ExpectationSuite, ge.core.ExpectationSuite]
         ] = None,
         online_enabled: Optional[bool] = False,
+        topic_name: Optional[str] = None,
     ):
         """Create a external feature group metadata object.
 
@@ -879,11 +918,13 @@ class FeatureStore:
                 Defaults to `None`.
             online_enabled: Define whether it should be possible to sync the feature group to
                 the online feature store for low latency access, defaults to `False`.
+            topic_name: Optionally, define the name of the topic used for data ingestion. If left undefined it
+                defaults to using project topic.
 
         # Returns
             `ExternalFeatureGroup`. The external feature group metadata object.
         """
-        return feature_group.ExternalFeatureGroup(
+        feature_group_object = feature_group.ExternalFeatureGroup(
             name=name,
             query=query,
             data_format=data_format,
@@ -900,8 +941,12 @@ class FeatureStore:
             event_time=event_time,
             expectation_suite=expectation_suite,
             online_enabled=online_enabled,
+            topic_name=topic_name,
         )
+        feature_group_object.feature_store = self
+        return feature_group_object
 
+    @usage.method_logger
     def get_or_create_spine_group(
         self,
         name: str,
@@ -1018,8 +1063,9 @@ class FeatureStore:
         """
         try:
             spine = self._feature_group_api.get(
-                name, version, feature_group_api.FeatureGroupApi.SPINE
+                self.id, name, version, feature_group_api.FeatureGroupApi.SPINE
             )
+            spine.feature_store = self
             spine.dataframe = dataframe
             return spine
         except exceptions.RestAPIError as e:
@@ -1038,6 +1084,7 @@ class FeatureStore:
                     featurestore_id=self._id,
                     featurestore_name=self._name,
                 )
+                spine.feature_store = self
                 return spine._save()
             else:
                 raise e
@@ -1150,6 +1197,7 @@ class FeatureStore:
             train_split=train_split,
         )
 
+    @usage.method_logger
     def create_transformation_function(
         self,
         transformation_function: callable,
@@ -1208,6 +1256,7 @@ class FeatureStore:
             version=version,
         )
 
+    @usage.method_logger
     def get_transformation_function(
         self,
         name: str,
@@ -1309,6 +1358,7 @@ class FeatureStore:
         """
         return self._transformation_function_engine.get_transformation_fn(name, version)
 
+    @usage.method_logger
     def get_transformation_functions(self):
         """Get  all transformation functions metadata objects.
 
@@ -1326,6 +1376,7 @@ class FeatureStore:
         """
         return self._transformation_function_engine.get_transformation_fns()
 
+    @usage.method_logger
     def create_feature_view(
         self,
         name: str,
@@ -1333,6 +1384,8 @@ class FeatureStore:
         version: Optional[int] = None,
         description: Optional[str] = "",
         labels: Optional[List[str]] = [],
+        inference_helper_columns: Optional[List[str]] = [],
+        training_helper_columns: Optional[List[str]] = [],
         transformation_functions: Optional[Dict[str, TransformationFunction]] = {},
     ):
         """Create a feature view metadata object and saved it to hopsworks.
@@ -1400,6 +1453,23 @@ class FeatureStore:
                 the feature view. When replaying a `Query` during model inference,
                 the label features can be omitted from the feature vector retrieval.
                 Defaults to `[]`, no label.
+            inference_helper_columns: A list of feature names that are not used in training the model itself but can be
+                used during batch or online inference for extra information. Inference helper column name(s) must be
+                part of the `Query` object. If inference helper column name(s) belong to feature group that is part
+                of a `Join` with `prefix` defined, then this prefix needs to be prepended to the original column name
+                when defining `inference_helper_columns` list. When replaying a `Query` during model inference,
+                the inference helper columns optionally can be omitted during batch (`get_batch_data`) and will be
+                omitted during online  inference (`get_feature_vector(s)`). To get inference helper column(s) during
+                online inference use `get_inference_helper(s)` method. Defaults to `[], no helper columns.
+            training_helper_columns: A list of feature names that are not the part of the model schema itself but can be
+                used during training as a helper for extra information. Training helper column name(s) must be
+                part of the `Query` object. If training helper column name(s) belong to feature group that is part
+                of a `Join` with `prefix` defined, then this prefix needs to prepended to the original column name when
+                defining `training_helper_columns` list. When replaying a `Query` during model inference,
+                the training helper columns will be omitted during both batch and online inference.
+                Training helper columns can be optionally fetched with training data. For more details see
+                documentation for feature view's get training data methods.  Defaults to `[], no training helper
+                columns.
             transformation_functions: A dictionary mapping tansformation functions to
                 to the features they should be applied to before writing out the
                 vector and at inference time. Defaults to `{}`, no
@@ -1415,10 +1485,13 @@ class FeatureStore:
             version=version,
             description=description,
             labels=labels,
+            inference_helper_columns=inference_helper_columns,
+            training_helper_columns=training_helper_columns,
             transformation_functions=transformation_functions,
         )
         return self._feature_view_engine.save(feat_view)
 
+    @usage.method_logger
     def get_or_create_feature_view(
         self,
         name: str,
@@ -1426,6 +1499,8 @@ class FeatureStore:
         version: int,
         description: Optional[str] = "",
         labels: Optional[List[str]] = [],
+        inference_helper_columns: Optional[List[str]] = [],
+        training_helper_columns: Optional[List[str]] = [],
         transformation_functions: Optional[Dict[str, TransformationFunction]] = {},
     ):
         """Get feature view metadata object or create a new one if it doesn't exist. This method doesn't update
@@ -1455,6 +1530,23 @@ class FeatureStore:
                 the feature view. When replaying a `Query` during model inference,
                 the label features can be omitted from the feature vector retrieval.
                 Defaults to `[]`, no label.
+            inference_helper_columns: A list of feature names that are not used in training the model itself but can be
+                used during batch or online inference for extra information. Inference helper column name(s) must be
+                part of the `Query` object. If inference helper column name(s) belong to feature group that is part
+                of a `Join` with `prefix` defined, then this prefix needs to be prepended to the original column name
+                when defining `inference_helper_columns` list. When replaying a `Query` during model inference,
+                the inference helper columns optionally can be omitted during batch (`get_batch_data`) and will be
+                omitted during online  inference (`get_feature_vector(s)`). To get inference helper column(s) during
+                online inference use `get_inference_helper(s)` method. Defaults to `[], no helper columns.
+            training_helper_columns: A list of feature names that are not the part of the model schema itself but can be
+                used during training as a helper for extra information. Training helper column name(s) must be
+                part of the `Query` object. If training helper column name(s) belong to feature group that is part
+                of a `Join` with `prefix` defined, then this prefix needs to prepended to the original column name when
+                defining `training_helper_columns` list. When replaying a `Query` during model inference,
+                the training helper columns will be omitted during both batch and online inference.
+                Training helper columns can be optionally fetched with training data. For more details see
+                documentation for feature view's get training data methods.  Defaults to `[], no training helper
+                columns.
             transformation_functions: A dictionary mapping tansformation functions to
                 to the features they should be applied to before writing out the
                 vector and at inference time. Defaults to `{}`, no
@@ -1463,7 +1555,6 @@ class FeatureStore:
         # Returns:
             `FeatureView`: The feature view metadata object.
         """
-
         try:
             return self._feature_view_engine.get(name, version)
         except exceptions.RestAPIError as e:
@@ -1477,11 +1568,14 @@ class FeatureStore:
                     version=version,
                     description=description,
                     labels=labels,
+                    inference_helper_columns=inference_helper_columns,
+                    training_helper_columns=training_helper_columns,
                     transformation_functions=transformation_functions,
                 )
             else:
                 raise e
 
+    @usage.method_logger
     def get_feature_view(self, name: str, version: int = None):
         """Get a feature view entity from the feature store.
 
@@ -1520,6 +1614,7 @@ class FeatureStore:
             version = self.DEFAULT_VERSION
         return self._feature_view_engine.get(name, version)
 
+    @usage.method_logger
     def get_feature_views(self, name):
         """Get a list of all versions of a feature view entity from the feature store.
 
@@ -1566,11 +1661,6 @@ class FeatureStore:
     def project_id(self):
         """Id of the project in which the feature store is located."""
         return self._project_id
-
-    @property
-    def description(self):
-        """Description of the feature store."""
-        return self._description
 
     @property
     def online_featurestore_name(self):

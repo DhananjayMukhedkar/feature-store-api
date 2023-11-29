@@ -66,7 +66,7 @@
             "id": 32
           }
         ],
-        "meta": "{ \"great_expectations_version\": \"0.14.13\", \"key\": \"value\" }",
+        "meta": "{ \"great_expectations_version\": \"0.15.12\", \"key\": \"value\" }",
         "id": 21,
         "data_asset_type": "test_data_asset_type",
         "ge_cloud_id": "test_ge_cloud_id",
@@ -163,7 +163,7 @@
               "id": 32
             }
           ],
-          "meta": "{ \"great_expectations_version\": \"0.14.13\", \"key\": \"value\" }",
+          "meta": "{ \"great_expectations_version\": \"0.15.12\", \"key\": \"value\" }",
           "id": 21,
           "data_asset_type": "test_data_asset_type",
           "ge_cloud_id": "test_ge_cloud_id",
@@ -200,6 +200,29 @@
       "id": 15,
       "name": "fg_test",
       "version": 1
+    },
+    "method": "GET",
+    "path_params": [
+      "project",
+      "119",
+      "featurestores",
+      67,
+      "featuregroups",
+      "fg_test"
+    ],
+    "query_params": {
+      "version": 1
+    },
+    "headers": null
+  },
+  "get_basic_info_deprecated": {
+    "response": {
+      "type": "cachedFeaturegroupDTO",
+      "featurestoreId": 67,
+      "id": 15,
+      "name": "fg_test",
+      "version": 1,
+      "deprecated": true
     },
     "method": "GET",
     "path_params": [
@@ -282,7 +305,7 @@
             "id": 32
           }
         ],
-        "meta": "{ \"great_expectations_version\": \"0.14.13\", \"key\": \"value\" }",
+        "meta": "{ \"great_expectations_version\": \"0.15.12\", \"key\": \"value\" }",
         "id": 21,
         "data_asset_type": "test_data_asset_type",
         "ge_cloud_id": "test_ge_cloud_id",
@@ -379,7 +402,7 @@
               "id": 32
             }
           ],
-          "meta": "{ \"great_expectations_version\": \"0.14.13\", \"key\": \"value\" }",
+          "meta": "{ \"great_expectations_version\": \"0.15.12\", \"key\": \"value\" }",
           "id": 21,
           "data_asset_type": "test_data_asset_type",
           "ge_cloud_id": "test_ge_cloud_id",
