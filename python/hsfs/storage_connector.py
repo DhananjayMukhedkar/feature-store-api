@@ -819,7 +819,6 @@ class JdbcConnector(StorageConnector):
         connection_string=None,
         arguments=None,
         driver_path=None,
-        driver_name=None,
     ):
         super().__init__(id, name, description, featurestore_id)
 
@@ -827,7 +826,6 @@ class JdbcConnector(StorageConnector):
         self._connection_string = connection_string
         self._arguments = arguments
         self._driver_path = driver_path
-        self._driver_name = driver_name
 
     @property
     def connection_string(self):
@@ -844,10 +842,6 @@ class JdbcConnector(StorageConnector):
     @property
     def driver_path(self):
         return self._driver_path
-
-    @property
-    def driver_name(self):
-        return self._driver_name
 
     def spark_options(self):
         """Return prepared options to be passed to Spark, based on the additional
